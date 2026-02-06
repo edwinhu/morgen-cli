@@ -1,0 +1,76 @@
+import { describe, it, expect } from "bun:test";
+import { resolve, dirname } from "path";
+
+describe("morgen CLI", () => {
+  const CLI = resolve(dirname(import.meta.path), "..", "cli.ts");
+
+  it("shows help with --help", async () => {
+    const proc = Bun.spawn(["bun", "run", CLI, "--help"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = await new Response(proc.stdout).text();
+    await proc.exited;
+    expect(stdout).toContain("Morgen CLI");
+    expect(stdout).toContain("COMMANDS");
+    expect(stdout).toContain("tasks");
+  });
+
+  it("shows version with --version", async () => {
+    const proc = Bun.spawn(["bun", "run", CLI, "--version"], {
+      stdout: "pipe",
+    });
+    const stdout = await new Response(proc.stdout).text();
+    await proc.exited;
+    expect(stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  it("shows help with no args", async () => {
+    const proc = Bun.spawn(["bun", "run", CLI], {
+      stdout: "pipe",
+    });
+    const stdout = await new Response(proc.stdout).text();
+    await proc.exited;
+    expect(stdout).toContain("Morgen CLI");
+  });
+
+  it("shows error for unknown command", async () => {
+    const proc = Bun.spawn(["bun", "run", CLI, "nonexistent"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stderr = await new Response(proc.stderr).text();
+    const exitCode = await proc.exited;
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Unknown command");
+  });
+
+  it("tasks command fails without API key", async () => {
+    const env = { ...process.env };
+    delete env.MORGEN_API_KEY;
+
+    const proc = Bun.spawn(["bun", "run", CLI, "tasks"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env,
+    });
+    const stderr = await new Response(proc.stderr).text();
+    const exitCode = await proc.exited;
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("MORGEN_API_KEY");
+  });
+
+  it("tasks create requires --title", async () => {
+    const env = { ...process.env, MORGEN_API_KEY: "test-key" };
+
+    const proc = Bun.spawn(["bun", "run", CLI, "tasks", "create"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env,
+    });
+    const stderr = await new Response(proc.stderr).text();
+    const exitCode = await proc.exited;
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("--title");
+  });
+});

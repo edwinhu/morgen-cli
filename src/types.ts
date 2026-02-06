@@ -1,0 +1,152 @@
+/**
+ * Morgen API Types
+ *
+ * Based on https://docs.morgen.so/
+ */
+
+export interface MorgenTask {
+  "@type": "Task";
+  id: string;
+  accountId: string;
+  integrationId: string;
+  taskListId: string;
+  title: string;
+  description?: string;
+  descriptionContentType?: "text/plain" | "text/html";
+  due?: string;               // LocalDateTime: YYYY-MM-DDTHH:mm:ss
+  timeZone?: string;          // IANA timezone
+  estimatedDuration?: string; // ISO 8601 duration (e.g. "PT30M")
+  priority?: number;          // 0 (undefined) to 9 (lowest); 1 = highest
+  progress?: "needs-action" | "in-process" | "completed" | "failed" | "cancelled";
+  position?: number;
+  relatedTo?: Record<string, { relationType: "parent" | "child" }>;
+  tags?: string[];
+  created?: string;
+  updated?: string;
+}
+
+export interface MorgenTag {
+  id: string;
+  name: string;
+  color?: string;
+  updated?: string;
+}
+
+export interface MorgenCalendar {
+  "@type": "Calendar";
+  id: string;
+  accountId: string;
+  integrationId: string;
+  name: string;
+  color?: string;
+  sortOrder?: number;
+  myRights?: {
+    mayRead: boolean;
+    mayWrite: boolean;
+    mayAdmin: boolean;
+    mayRSVP: boolean;
+  };
+}
+
+export interface MorgenEvent {
+  "@type": "Event";
+  id: string;
+  calendarId: string;
+  accountId: string;
+  title: string;
+  start: string;
+  duration: string;           // ISO 8601 duration
+  timeZone: string;
+  showWithoutTime: boolean;
+  description?: string;
+  participants?: MorgenParticipant[];
+  locations?: MorgenLocation[];
+  freeBusyStatus?: string;
+  privacy?: string;
+  recurrenceRules?: string[];
+}
+
+export interface MorgenParticipant {
+  email: string;
+  name?: string;
+  rsvp?: string;
+}
+
+export interface MorgenLocation {
+  name?: string;
+  uri?: string;
+}
+
+export interface MorgenAccount {
+  id: string;
+  providerId?: string;
+  userId?: string;
+  integrationId: string;
+}
+
+// API Response wrappers
+export interface TaskListResponse {
+  data: {
+    tasks: MorgenTask[];
+    labelDefs?: MorgenTag[];
+    spaces?: unknown[];
+  };
+}
+
+export interface TaskCreateResponse {
+  data: { id: string };
+}
+
+export interface EventListResponse {
+  data: { events: MorgenEvent[] };
+}
+
+export interface CalendarListResponse {
+  data: MorgenCalendar[];
+}
+
+export interface TagListResponse {
+  data: MorgenTag[];
+}
+
+export interface AccountListResponse {
+  data: MorgenAccount[];
+}
+
+// Input types for create/update operations
+export interface CreateTaskInput {
+  title: string;
+  description?: string;
+  descriptionContentType?: "text/plain" | "text/html";
+  due?: string;
+  timeZone?: string;
+  estimatedDuration?: string;
+  taskListId?: string;
+  priority?: number;
+  tags?: string[];
+}
+
+export interface UpdateTaskInput {
+  id: string;
+  title?: string;
+  description?: string;
+  descriptionContentType?: "text/plain" | "text/html";
+  due?: string;
+  timeZone?: string;
+  estimatedDuration?: string;
+  taskListId?: string;
+  priority?: number;
+  progress?: "needs-action" | "in-process" | "completed" | "failed" | "cancelled";
+  tags?: string[];
+}
+
+export interface CreateEventInput {
+  accountId: string;
+  calendarId: string;
+  title: string;
+  start: string;
+  duration: string;
+  timeZone: string;
+  showWithoutTime: boolean;
+  description?: string;
+}
