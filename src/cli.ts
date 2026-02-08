@@ -5,6 +5,8 @@
 
 import {
   listTasks,
+  listAllTasks,
+  listIntegrationAccounts,
   getTask,
   createTask,
   updateTask,
@@ -15,6 +17,7 @@ import {
 } from "./tasks";
 import { sendChat } from "./chat";
 import { MorgenApiError } from "./morgen-api";
+import { authenticate } from "./morgen-cdp";
 import type { MorgenTask, CreateTaskInput, UpdateTaskInput } from "./types";
 import pkg from "../package.json";
 
@@ -67,12 +70,9 @@ interface CliOptions {
   tags?: string[];
   after?: string;
   parent?: string;
+  account?: string;
+  all?: boolean;
 }
-
-// ---------------------------------------------------------------------------
-// Subcommands that accept a positional ID argument
-// ---------------------------------------------------------------------------
-const ID_SUBCOMMANDS = new Set(["get", "update", "close", "reopen", "delete", "move"]);
 
 // ---------------------------------------------------------------------------
 // Arg parser -- custom, zero-dependency
@@ -92,7 +92,6 @@ function parseArgs(args: string[]): CliOptions {
   while (i < args.length) {
     const arg = args[i];
 
-    // Handle --key=value
     if (arg.startsWith("--") && arg.includes("=")) {
       const eqIdx = arg.indexOf("=");
       const key = arg.slice(2, eqIdx);
@@ -102,28 +101,14 @@ function parseArgs(args: string[]): CliOptions {
       continue;
     }
 
-    // Handle --flag / --key value
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
 
-      // Boolean flags
-      if (key === "json") {
-        opts.json = true;
-        i++;
-        continue;
-      }
-      if (key === "help") {
-        opts.help = true;
-        i++;
-        continue;
-      }
-      if (key === "version") {
-        opts.version = true;
-        i++;
-        continue;
-      }
+      if (key === "json") { opts.json = true; i++; continue; }
+      if (key === "help") { opts.help = true; i++; continue; }
+      if (key === "version") { opts.version = true; i++; continue; }
+      if (key === "all") { opts.all = true; i++; continue; }
 
-      // Named args that consume the next token
       const next = args[i + 1];
       if (next !== undefined) {
         setNamedArg(opts, key, next);
@@ -131,29 +116,17 @@ function parseArgs(args: string[]): CliOptions {
         continue;
       }
 
-      // Flag at end of args with no value -- treat as boolean
       i++;
       continue;
     }
 
-    // Handle short flags
-    if (arg === "-h") {
-      opts.help = true;
-      i++;
-      continue;
-    }
-    if (arg === "-v") {
-      opts.version = true;
-      i++;
-      continue;
-    }
+    if (arg === "-h") { opts.help = true; i++; continue; }
+    if (arg === "-v") { opts.version = true; i++; continue; }
 
-    // Positional argument
     positionals.push(arg);
     i++;
   }
 
-  // Map positionals
   if (positionals.length > 0) opts.command = positionals[0];
   if (positionals.length > 1) opts.subCommand = positionals[1];
   if (positionals.length > 2) opts.positional = positionals[2];
@@ -162,56 +135,36 @@ function parseArgs(args: string[]): CliOptions {
   // that consume all remaining words as a single prompt
   if (positionals.length > 1) opts.restArgs = positionals.slice(1);
 
-  // For grouped commands (like "tasks get <id>"), if subCommand expects an ID
-  // and we have a third positional, it's the ID. But if we only have two
-  // positionals and the subCommand is an ID-accepting command, shift:
-  // e.g. "tasks get abc123" => command=tasks, subCommand=get, positional=abc123
-  // This is already handled above when positionals.length > 2.
-
   return opts;
 }
 
 function setNamedArg(opts: CliOptions, key: string, value: string): void {
   switch (key) {
-    case "title":
-      opts.title = value;
-      break;
-    case "description":
-      opts.description = value;
-      break;
-    case "due":
-      opts.due = value;
-      break;
-    case "duration":
-      opts.duration = value;
-      break;
-    case "priority":
-      opts.priority = value;
-      break;
-    case "list":
-      opts.list = value;
-      break;
-    case "progress":
-      opts.progress = value;
-      break;
-    case "limit":
-      opts.limit = parseInt(value, 10);
-      break;
-    case "tags":
-      opts.tags = value.split(",").map((t) => t.trim());
-      break;
-    case "after":
-      opts.after = value;
-      break;
-    case "parent":
-      opts.parent = value;
-      break;
+    case "title": opts.title = value; break;
+    case "description": opts.description = value; break;
+    case "due": opts.due = value; break;
+    case "duration": opts.duration = value; break;
+    case "priority": opts.priority = value; break;
+    case "list": opts.list = value; break;
+    case "progress": opts.progress = value; break;
+    case "limit": opts.limit = parseInt(value, 10); break;
+    case "tags": opts.tags = value.split(",").map((t) => t.trim()); break;
+    case "after": opts.after = value; break;
+    case "parent": opts.parent = value; break;
+    case "account": opts.account = value; break;
   }
 }
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
 // ---------------------------------------------------------------------------
+function providerBadge(integrationId: string): string {
+  if (integrationId === "googleTasks") return `${colors.blue}[google]${colors.reset}`;
+  if (integrationId === "microsoftToDo") return `${colors.magenta}[mstodo]${colors.reset}`;
+  if (integrationId === "morgen") return "";
+  return `${colors.dim}[${integrationId}]${colors.reset}`;
+}
+
 function formatTask(task: MorgenTask): string {
   const progress =
     task.progress === "completed"
@@ -226,10 +179,8 @@ function formatTask(task: MorgenTask): string {
     task.priority && task.priority > 0 && task.priority <= 3
       ? ` ${colors.red}!${colors.reset}`
       : "";
-  const source =
-    task.integrationId !== "morgen"
-      ? `  ${colors.dim}[${task.integrationId}]${colors.reset}`
-      : "";
+  const badge = providerBadge(task.integrationId);
+  const source = badge ? `  ${badge}` : "";
 
   return `${progress} ${task.title}${pri}${due}${source}  ${colors.dim}${task.id}${colors.reset}`;
 }
@@ -251,13 +202,17 @@ ${colors.bold}USAGE${colors.reset}
   morgen <command> [subcommand] [options]
 
 ${colors.bold}COMMANDS${colors.reset}
-  ${colors.cyan}tasks${colors.reset}              List all tasks
+  ${colors.cyan}auth${colors.reset}               Authenticate via running Morgen app (CDP)
+  ${colors.cyan}accounts${colors.reset}           Show connected task accounts
+  ${colors.cyan}tasks${colors.reset}              List Morgen-native tasks
+  ${colors.cyan}tasks${colors.reset} --all         List tasks from ALL connected accounts
+  ${colors.cyan}tasks${colors.reset} --account <id> List tasks from a specific account
   ${colors.cyan}tasks get${colors.reset} <id>      Get a specific task
-  ${colors.cyan}tasks create${colors.reset}        Create a new task
-  ${colors.cyan}tasks update${colors.reset} <id>   Update a task
-  ${colors.cyan}tasks close${colors.reset} <id>    Mark task as complete
-  ${colors.cyan}tasks reopen${colors.reset} <id>   Reopen a completed task
-  ${colors.cyan}tasks delete${colors.reset} <id>   Delete a task
+  ${colors.cyan}tasks create${colors.reset}        Create a new task (Morgen-native)
+  ${colors.cyan}tasks update${colors.reset} <id>   Update a task (Morgen-native)
+  ${colors.cyan}tasks close${colors.reset} <id>    Mark task as complete (all providers)
+  ${colors.cyan}tasks reopen${colors.reset} <id>   Reopen a completed task (all providers)
+  ${colors.cyan}tasks delete${colors.reset} <id>   Delete a task (Morgen-native)
   ${colors.cyan}tasks move${colors.reset} <id>    Move/reorder a task (--after, --parent)
   ${colors.cyan}chat${colors.reset} <prompt>       Chat with Morgen AI assistant
   ${colors.cyan}help${colors.reset}               Show this help message
@@ -274,23 +229,31 @@ ${colors.bold}OPTIONS${colors.reset}
   --tags <ids>        Comma-separated tag IDs
   --after <id>        Place task after this task ID (for move)
   --parent <id>       Set parent task ID (for move)
+  --account <id>      Filter tasks by integration account ID
+  --all               List tasks from all connected accounts
   --json              Output as JSON
   --help              Show this help
   --version           Show version
 
+${colors.bold}AUTH${colors.reset}
+  Session token auth (from 'morgen auth') enables close/reopen on
+  Google Tasks and MS To Do. Requires Morgen desktop app running with:
+    /Applications/Morgen.app/Contents/MacOS/Morgen --remote-debugging-port=9223
+
+  Alternatively, set MORGEN_API_KEY for basic read + Morgen-native CRUD.
+
 ${colors.bold}EXAMPLES${colors.reset}
-  ${colors.dim}# List all tasks${colors.reset}
-  morgen tasks
-  morgen tasks --json
-  morgen tasks --limit 10
+  ${colors.dim}# Authenticate (extracts session from Morgen app)${colors.reset}
+  morgen auth
 
-  ${colors.dim}# Create a task${colors.reset}
-  morgen tasks create --title "Buy groceries" --due 2026-02-10
-  morgen tasks create --title "Review PR" --priority 1 --duration PT30M
+  ${colors.dim}# List tasks from all accounts${colors.reset}
+  morgen tasks --all
 
-  ${colors.dim}# Update and complete${colors.reset}
-  morgen tasks update abc123 --title "Updated title"
-  morgen tasks close abc123
+  ${colors.dim}# Close an integration task${colors.reset}
+  morgen tasks close <base64-task-id>
+
+  ${colors.dim}# Create a Morgen-native task${colors.reset}
+  morgen tasks create --title "Review PR" --due 2026-02-10
 
   ${colors.dim}# Chat with Morgen AI${colors.reset}
   morgen chat "What is on my calendar today?"
@@ -304,12 +267,54 @@ ${colors.bold}ENVIRONMENT${colors.reset}
 // ---------------------------------------------------------------------------
 // Command handlers
 // ---------------------------------------------------------------------------
+async function handleAuth(opts: CliOptions) {
+  try {
+    const result = await authenticate();
+    if (opts.json) {
+      console.log(JSON.stringify({
+        email: result.email,
+        expiresAt: new Date(result.expiresAt).toISOString(),
+      }));
+    } else {
+      success(`Authenticated as ${result.email}`);
+      info(`Session expires: ${new Date(result.expiresAt).toLocaleString()}`);
+    }
+  } catch (err) {
+    error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+}
+
+async function handleAccounts(opts: CliOptions) {
+  const accounts = await listIntegrationAccounts();
+
+  if (opts.json) {
+    console.log(JSON.stringify(accounts, null, 2));
+  } else {
+    if (accounts.length === 0) {
+      console.log(`${colors.dim}No task integration accounts found${colors.reset}`);
+    } else {
+      console.log(`${colors.bold}Connected Task Accounts${colors.reset}\n`);
+      for (const acct of accounts) {
+        const badge = providerBadge(acct.integrationId);
+        const display = acct.providerUserDisplayName || acct.providerUserId || "";
+        console.log(`  ${badge} ${display}  ${colors.dim}${acct._id}${colors.reset}`);
+      }
+    }
+  }
+}
+
 async function handleTasks(opts: CliOptions) {
   const sub = opts.subCommand;
 
   // Default: list tasks
   if (!sub || sub === "list") {
-    const tasks = await listTasks({ limit: opts.limit });
+    let tasks;
+    if (opts.all) {
+      tasks = await listAllTasks({ limit: opts.limit });
+    } else {
+      tasks = await listTasks({ limit: opts.limit, accountId: opts.account });
+    }
     if (opts.json) {
       console.log(JSON.stringify(tasks, null, 2));
     } else {
@@ -515,16 +520,10 @@ async function main() {
   const opts = parseArgs(args);
 
   try {
-    // Route commands
-    if (opts.command === "help") {
-      printHelp();
-      return;
-    }
-
-    if (opts.command === "tasks") {
-      await handleTasks(opts);
-      return;
-    }
+    if (opts.command === "help") { printHelp(); return; }
+    if (opts.command === "auth") { await handleAuth(opts); return; }
+    if (opts.command === "accounts") { await handleAccounts(opts); return; }
+    if (opts.command === "tasks") { await handleTasks(opts); return; }
 
     if (opts.command === "chat") {
       await handleChat(opts);
@@ -537,11 +536,7 @@ async function main() {
   } catch (err) {
     if (err instanceof MorgenApiError) {
       error(err.message);
-      if (err.status === 401) {
-        info(
-          "Set MORGEN_API_KEY environment variable with your API key"
-        );
-      }
+      if (err.status === 401) info("Run 'morgen auth' or set MORGEN_API_KEY.");
     } else if (err instanceof Error) {
       error(err.message);
     }

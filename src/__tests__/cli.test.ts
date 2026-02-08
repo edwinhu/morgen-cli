@@ -46,18 +46,33 @@ describe("morgen CLI", () => {
   });
 
   it("tasks command fails without API key", async () => {
-    const env = { ...process.env };
-    delete env.MORGEN_API_KEY;
+    // Bun auto-loads .env, so we need a tmpdir without one
+    const tmpdir = (await import("os")).tmpdir();
+    const env = { ...process.env, MORGEN_API_KEY: "" };
 
     const proc = Bun.spawn(["bun", "run", CLI, "tasks"], {
       stdout: "pipe",
       stderr: "pipe",
       env,
+      cwd: tmpdir,
     });
     const stderr = await new Response(proc.stderr).text();
     const exitCode = await proc.exited;
     expect(exitCode).not.toBe(0);
     expect(stderr).toContain("MORGEN_API_KEY");
+  });
+
+  it("help shows auth and accounts commands", async () => {
+    const proc = Bun.spawn(["bun", "run", CLI, "--help"], {
+      stdout: "pipe",
+    });
+    const stdout = await new Response(proc.stdout).text();
+    await proc.exited;
+    expect(stdout).toContain("auth");
+    expect(stdout).toContain("accounts");
+    expect(stdout).toContain("--all");
+    expect(stdout).toContain("--account");
+    expect(stdout).toContain("MORGEN_API_KEY");
   });
 
   it("tasks create requires --title", async () => {

@@ -1,170 +1,125 @@
-# Spec: Morgen CLI
+# Spec: Morgen AI Chat Integration
 
 ## Problem
+Morgen has an AI chat feature in its desktop app that understands natural language requests about calendar and task management. The API is undocumented but has been reverse-engineered via CDP network interception.
 
-Morgen is a calendar + task management app that aggregates Microsoft To Do and Google Tasks into a unified view. We need a CLI + MCP server to automate task and calendar management from LLM agents (like Claude Code). This follows the same pattern as superhuman-cli.
+## Discovery Results (2026-02-08)
 
-**Key discovery:** Morgen has a **documented public API** at https://docs.morgen.so/ with full CRUD for tasks, events, calendars, and tags. Authentication is via API key from https://platform.morgen.so. This eliminates the need for CDP reverse-engineering for most operations.
+### Endpoint
+`POST https://ai.cf.morgen.so/openrouter/chat/completions`
 
-## Architecture (from exploration)
+### Authentication
+- `Authorization: Bearer <JWT_SESSION_TOKEN>` — NOT the MORGEN_API_KEY
+- JWT from Morgen session token (already implemented in `src/morgen-cdp.ts`)
+- Session token obtained via refresh token exchange at `POST /identity/refresh`
+- TTL ~1 hour, auto-refreshable via stored refresh token
 
-### API Layer (Primary)
-- **Base URL:** `https://api.morgen.so/v3/`
-- **Auth:** `Authorization: ApiKey <API_KEY>` header
-- **Endpoints discovered:**
-  - Tasks: `/tasks/list`, `/tasks`, `/tasks/create`, `/tasks/update`, `/tasks/move`, `/tasks/delete`, `/tasks/close`, `/tasks/reopen`
-  - Events: `/events/list`, `/events/create`, `/events/update`, `/events/delete`
-  - Calendars: `/calendars/list`, `/calendars/update`
-  - Tags: `/tags/list`, `/tags`, `/tags/create`, `/tags/update`, `/tags/delete`
-  - Integrations: `/integrations/accounts/list`, `/integrations/list`
-
-### CDP Layer (Secondary - for token/config extraction)
-- Morgen is Electron app at `/Applications/Morgen.app/Contents/MacOS/Morgen`
-- Data dir: `~/Library/Application Support/Morgen/`
-- Config: `~/Library/Application Support/Morgen/config.json` contains:
-  - `morgen-refresh-token` (JWT)
-  - `morgen-user-id`
-  - `morgen-email`
-- Can launch with `--remote-debugging-port=XXXX` for CDP
-
-### Reference Implementation: superhuman-cli
-- TypeScript/Bun, custom arg parser (no yargs/commander)
-- Dual-mode entry: CLI (`src/cli.ts`) + MCP server (`src/index.ts --mcp`)
-- ConnectionProvider abstraction: CachedTokenProvider (no CDP) vs CDPConnectionProvider
-- Token persistence: `~/.config/superhuman-cli/tokens.json`
-- Dependencies: `@modelcontextprotocol/sdk`, `chrome-remote-interface`, `zod`
-- Custom ANSI color helpers, `--json` flag for structured output
-
-### Reference Implementation: mstodo-raycast
-- MS Graph API: `https://graph.microsoft.com/v1.0/me/todo/lists/{listId}/tasks`
-- Task data model: title, body, dueDateTime, reminderDateTime, status, importance, recurrence
-- MSAL OAuth with scopes: Tasks.ReadWrite, User.Read
-- Caching with 5-min TTL
-
-## Requirements
-
-### Core: Task CRUD (Priority 1)
-- List all tasks (unified across MS To Do, Google Tasks via Morgen API)
-- Create tasks (title, description, due date, estimated duration, priority, tags, taskListId)
-- Update tasks (partial updates)
-- Delete tasks
-- Close/reopen tasks (Morgen's completion model)
-- Move tasks (reorder, reparent for subtask hierarchy)
-
-### Tags Management
-- List/create/update/delete tags
-- Assign tags to tasks
-
-### Calendar Management (Priority 2)
-- List events across all connected calendars
-- Create/update/delete events
-- Support recurring events
-
-### Infrastructure
-- TypeScript/Bun runtime (matching superhuman-cli)
-- API key auth (from platform.morgen.so, stored in `~/.config/morgen-cli/config.json`)
-- Same subcommand structure as superhuman-cli
-- MCP server mode (`morgen --mcp`)
-- Claude Code skill layer
-
-### Future (Not in Scope Now)
-- CDP-based operations (only if API proves insufficient)
-- Morgen chat/AI system integration
-- Direct MS Graph / Google Tasks API bypass
-
-## Task Data Model (from Morgen API)
-
-```typescript
-interface MorgenTask {
-  "@type": "Task";
-  id: string;
-  accountId: string;
-  integrationId: string;     // "morgen", "o365", "google", etc.
-  taskListId: string;
-  title: string;
-  description?: string;
-  due?: string;               // LocalDateTime: YYYY-MM-DDTHH:mm:ss
-  timeZone?: string;          // IANA timezone
-  estimatedDuration?: string; // ISO 8601 duration (e.g. "PT30M")
-  priority?: number;          // 0 (undefined) to 9 (lowest)
-  progress?: "needs-action" | "in-process" | "completed" | "failed" | "cancelled";
-  position?: number;
-  relatedTo?: object;         // Parent/child task relations
-  tags?: string[];
-  created?: string;
-  updated?: string;
+### Request Format
+OpenAI-compatible chat completions (proxied through Cloudflare AI Gateway → OpenRouter):
+```json
+{
+  "model": "anthropic/claude-haiku-4.5",
+  "response_format": { "type": "text" },
+  "messages": [
+    { "role": "system", "content": "<scheduling agent system prompt>" },
+    { "role": "user", "content": "what's on my calendar today?" }
+  ],
+  "tools": [...],
+  "parallel_tool_calls": true,
+  "stream": true
 }
 ```
 
-## Success Criteria
+### Response Format
+- SSE streaming (`text/event-stream`)
+- Standard OpenAI chunk format via OpenRouter
+- Tool calls returned as `finish_reason: "tool_calls"` with function name + args
+- Usage stats in final chunk
 
-- [ ] `morgen tasks` lists all tasks in unified format
-- [ ] `morgen tasks create --title "Test"` creates a task via Morgen API
-- [ ] `morgen tasks update <id> --title "Updated"` updates a task
-- [ ] `morgen tasks close <id>` marks a task complete
-- [ ] `morgen tasks delete <id>` removes a task
-- [ ] `morgen calendar` lists upcoming events
-- [ ] `morgen calendar create --title "Meeting" --start "2pm" --duration 30` creates event
-- [ ] `morgen tags` lists all tags
-- [ ] API key auth works (stored in config file)
-- [ ] `--json` flag outputs structured JSON
-- [ ] MCP server mode works (`morgen --mcp`)
-- [ ] Unit tests pass for API client, parsers, formatters
-- [ ] Integration tests verify actual API round-trips
-- [ ] E2E tests verify CLI command sequences
+### Architecture
+- Multi-agent system ("Agents SDK") with Agents and Handoffs
+- Primary: "Scheduling Agent" — executive assistant persona
+- Tools: `calendarRead`, `calendarComputeOptimalSchedule`, `taskEditContext`
+- Agent handoffs via `transfer_to_<agent_name>` function calls
+- Client-side tool execution: Morgen app runs tools, sends results back in follow-up request
+
+### Two-Request Pattern
+1. First POST: user message → AI may respond with tool calls (e.g., `calendarRead`)
+2. Second POST: tool results included → AI responds with final text answer
+
+## Requirements
+1. Build `src/chat.ts` — chat API client with SSE streaming support
+2. Add `morgen chat "prompt"` CLI command with streaming terminal output
+3. Add `morgen chat --json "prompt"` for structured JSON output
+4. Handle tool calls gracefully (either execute locally or show tool call info)
+5. Require session token auth (CDP or cached session)
+
+## Success Criteria
+- [x] AI chat API endpoint discovered and documented
+- [ ] `morgen chat "what's on my calendar today?"` works from terminal
+- [ ] `morgen chat --json "..."` returns structured JSON output
+- [ ] Streaming output displays tokens as they arrive
+- [ ] Unit tests pass with mocked SSE responses
+- [ ] Integration test passes against live API
 
 ## Constraints
-
-- Morgen API is in "early access" - new fields may be added without notice
-- Task list endpoint: max 100 tasks per request (pagination via `updatedAfter`)
-- Rate limits exist (10 points per /tasks/list request)
-- API key must be obtained manually from platform.morgen.so
+- Requires session token (not API key) — user must run `morgen auth` first
+- SSE streaming needs incremental parsing
+- Tool calls from AI are informational only (we don't execute `calendarRead` etc. server-side)
+- System prompt is injected server-side by Morgen, we only send user messages
+- CORS restricted to `morgen://.` origin — may need to omit or spoof origin header
 
 ## Testing Strategy (MANDATORY - USER APPROVED)
 
-- **User's chosen approach:** Unit tests + Integration tests + E2E automation
+- **User's chosen approach:** Both unit + integration tests
 - **Framework:** bun:test
 - **Command:** `bun test`
-- **Testing skills:** Standard unit tests (bun:test) + dev-test-electron (CDP for E2E)
 
 ### REAL Test Definition (MANDATORY)
 
 | Field | Value |
 |-------|-------|
-| **User workflow to replicate** | `morgen tasks` -> see task list -> `morgen tasks create --title X` -> verify task appears |
-| **Code paths exercised** | API key loading -> HTTP client -> Morgen API -> response parsing -> CLI output |
-| **What user sees/verifies** | CLI stdout shows tasks in readable format |
-| **Protocol/transport** | HTTPS REST to `api.morgen.so/v3/` |
+| **User workflow to replicate** | `morgen chat "prompt"` → see AI response in terminal |
+| **Code paths exercised** | Session token → fetch SSE → parse chunks → display text |
+| **What user sees/verifies** | AI response text streamed to terminal |
+| **Protocol/transport** | HTTPS POST with SSE response to `ai.cf.morgen.so` |
 
 ### First Failing Test
 
-- **Test name:** `test_tasks_list_returns_tasks`
-- **What it tests:** CLI `tasks` subcommand fetches and displays tasks
-- **How it replicates workflow:** Run `morgen tasks` -> parse stdout -> verify task fields
-- **Expected failure:** "Expected task list output but got empty/error"
+- **Test name:** `test_chat_sends_prompt_and_streams_response`
+- **What it tests:** Chat client sends prompt via SSE, collects streamed response
+- **How it replicates user workflow:** Calls `sendChat("prompt")`, verifies response text returned
+- **Expected failure message:** "sendChat is not a function" (module doesn't exist yet)
 
-## Open Questions (RESOLVED)
+## Key Files
 
-- ~~What are Morgen's API endpoints?~~ **RESOLVED: Documented at docs.morgen.so**
-- ~~What auth mechanism?~~ **RESOLVED: API key via `Authorization: ApiKey <KEY>`**
-- ~~How does Morgen differentiate task backends?~~ **RESOLVED: `integrationId` field on tasks**
-- ~~Task data model?~~ **RESOLVED: See Task Data Model section above**
-- ~~REST, GraphQL, or WebSocket?~~ **RESOLVED: REST with JSON**
+| File | Purpose |
+|------|---------|
+| `src/morgen-cdp.ts:76-100` | Session token exchange (already works) |
+| `src/morgen-api.ts:29-45` | Auth header logic (session token preferred) |
+| `src/cli.ts:462-497` | Main entry + command router |
+| `src/types.ts` | Type definitions |
+| `src/__tests__/tasks.test.ts:69-77` | Mock fetch pattern to follow |
 
 ## Clarified Requirements
 
-### Auth Pattern
-- **Decision:** API key via `MORGEN_API_KEY` environment variable
-- **Rationale:** User already has API key, simple env var pattern
+### Tool Call Handling
+- **Decision:** Simple passthrough — show AI text only
+- **Behavior:** If AI calls a tool (calendarRead, etc.), show informational message like "AI is reading your calendar..." but don't execute it
+- **Rationale:** Keeps implementation simple; full tool execution can be added later
 
-### Task States
-- **Decision:** Simple close/reopen commands only
-- **Rationale:** Advanced states (in-process, failed, cancelled) can be set via `update --progress X` if needed
-- `morgen tasks close <id>` -> sets progress to "completed"
-- `morgen tasks reopen <id>` -> sets progress to "needs-action"
+### CORS Origin
+- **Decision:** Try without origin header first, fall back to spoofed `Origin: morgen://.` if rejected
+- **Rationale:** CLI (non-browser) requests may not need CORS; test both approaches
 
-## Remaining Open Questions
+### Auth Requirement
+- **Decision:** Session token required (not API key)
+- **Behavior:** If no session token available, error with "Run 'morgen auth' first"
+- **Reference:** `src/morgen-cdp.ts` already handles session token extraction + caching
 
-- What are the exact rate limit values?
-- Does the tasks API support filtering by taskListId, progress, tags?
-- How does task list management work (listing task lists, not just tasks)?
+## Open Questions (RESOLVED)
+- ~~What endpoint?~~ **`POST https://ai.cf.morgen.so/openrouter/chat/completions`**
+- ~~What auth?~~ **Bearer JWT session token (NOT API key)**
+- ~~Streamed?~~ **Yes, SSE (`text/event-stream`)**
+- ~~What context?~~ **Server injects system prompt with scheduling preferences + tools**
+- ~~Can we pass context?~~ **No, system prompt is server-side; we send user messages only**

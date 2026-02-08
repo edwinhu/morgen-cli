@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
   listTasks,
+  listAllTasks,
+  listIntegrationAccounts,
+  decodeIntegrationId,
   getTask,
   createTask,
   updateTask,
@@ -13,6 +16,9 @@ import {
 describe("tasks module exports", () => {
   it("exports all expected functions", () => {
     expect(typeof listTasks).toBe("function");
+    expect(typeof listAllTasks).toBe("function");
+    expect(typeof listIntegrationAccounts).toBe("function");
+    expect(typeof decodeIntegrationId).toBe("function");
     expect(typeof getTask).toBe("function");
     expect(typeof createTask).toBe("function");
     expect(typeof updateTask).toBe("function");
@@ -20,6 +26,24 @@ describe("tasks module exports", () => {
     expect(typeof reopenTask).toBe("function");
     expect(typeof deleteTask).toBe("function");
     expect(typeof moveTask).toBe("function");
+  });
+});
+
+describe("decodeIntegrationId", () => {
+  it("decodes a base64 integration task ID", () => {
+    const payload = { aid: "acct-123", t: "task-456", tl: "list-789" };
+    const encoded = btoa(JSON.stringify(payload));
+    const decoded = decodeIntegrationId(encoded);
+    expect(decoded).toEqual(payload);
+  });
+
+  it("returns null for a plain Morgen task ID", () => {
+    expect(decodeIntegrationId("simple-task-id-abc")).toBeNull();
+  });
+
+  it("returns null for base64 that doesn't have aid/t/tl", () => {
+    const encoded = btoa(JSON.stringify({ foo: "bar" }));
+    expect(decodeIntegrationId(encoded)).toBeNull();
   });
 });
 
@@ -93,6 +117,35 @@ describe("tasks module behavior", () => {
     expect(lastRequest!.init?.method).toBe("POST");
     const body = JSON.parse(lastRequest!.init?.body as string);
     expect(body.id).toBe("task-abc");
+  });
+
+  it("listTasks passes accountId param when provided", async () => {
+    mockFetch({ data: { tasks: [{ id: "int-1", title: "Integration task" }], labelDefs: [] } });
+
+    const tasks = await listTasks({ accountId: "acct-123" });
+
+    expect(lastRequest).not.toBeNull();
+    expect(lastRequest!.url).toContain("/v3/tasks/list");
+    expect(lastRequest!.url).toContain("accountId=acct-123");
+    expect(tasks).toEqual([{ id: "int-1", title: "Integration task" }]);
+  });
+
+  it("listIntegrationAccounts filters to task accounts", async () => {
+    mockFetch({
+      data: {
+        accounts: [
+          { _id: "a1", integrationId: "googleTasks", integrationGroups: ["tasks"] },
+          { _id: "a2", integrationId: "google", integrationGroups: ["calendars"] },
+          { _id: "a3", integrationId: "microsoftToDo", integrationGroups: ["tasks"] },
+        ],
+      },
+    });
+
+    const accounts = await listIntegrationAccounts();
+
+    expect(accounts).toHaveLength(2);
+    expect(accounts[0]._id).toBe("a1");
+    expect(accounts[1]._id).toBe("a3");
   });
 
   it("propagates API errors as MorgenApiError", async () => {

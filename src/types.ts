@@ -84,6 +84,21 @@ export interface MorgenAccount {
   integrationId: string;
 }
 
+/** Account from /v3/integrations/accounts/list — richer than MorgenAccount */
+export interface IntegrationAccount {
+  _id: string;
+  integrationId: string;
+  integrationGroups?: string[];
+  providerUserId?: string;
+  providerUserDisplayName?: string;
+}
+
+export interface IntegrationAccountsResponse {
+  data: {
+    accounts: IntegrationAccount[];
+  };
+}
+
 // API Response wrappers
 export interface TaskListResponse {
   data: {
@@ -149,6 +164,13 @@ export interface CreateEventInput {
   timeZone: string;
   showWithoutTime: boolean;
   description?: string;
+}
+
+// Decoded Morgen integration task ID
+export interface DecodedMorgenTaskId {
+  aid: string; // Morgen account ID
+  t: string;   // native task ID
+  tl: string;  // native task list ID
 }
 
 // Calendar list response (from /v3/calendars/list)

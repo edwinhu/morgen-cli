@@ -2,8 +2,12 @@
  * Morgen API Client
  *
  * HTTP client for the Morgen REST API (api.morgen.so/v3).
- * Auth via MORGEN_API_KEY environment variable.
+ * Supports two auth modes:
+ *   - API key (MORGEN_API_KEY env var) — read-only for integration tasks
+ *   - Session token (from CDP auth) — full CRUD including integration tasks
  */
+
+import { loadSession } from "./morgen-cdp";
 
 const BASE_URL = "https://api.morgen.so/v3";
 
@@ -18,16 +22,26 @@ export class MorgenApiError extends Error {
   }
 }
 
-function getApiKey(): string {
+/**
+ * Get the best available auth header.
+ * Prefers session token (enables integration CRUD) over API key.
+ */
+async function getAuthHeader(): Promise<string> {
+  // Try session token first
+  const session = await loadSession();
+  if (session) {
+    return `Bearer ${session.token}`;
+  }
+
+  // Fall back to API key
   const key = process.env.MORGEN_API_KEY;
   if (!key) {
     throw new Error(
-      "MORGEN_API_KEY environment variable is not set.\n" +
-      "Get your API key from https://platform.morgen.so and set it:\n" +
-      "  export MORGEN_API_KEY=your_key_here"
+      "No authentication available.\n" +
+        "Either run 'morgen auth' (requires Morgen app running) or set MORGEN_API_KEY."
     );
   }
-  return key;
+  return `ApiKey ${key}`;
 }
 
 export async function morgenFetch<T>(
@@ -38,7 +52,7 @@ export async function morgenFetch<T>(
     params?: Record<string, string>;
   }
 ): Promise<T> {
-  const apiKey = getApiKey();
+  const authHeader = await getAuthHeader();
   const method = options?.method ?? "GET";
 
   let url = `${BASE_URL}${path}`;
@@ -50,8 +64,8 @@ export async function morgenFetch<T>(
   const fetchOptions: RequestInit = {
     method,
     headers: {
-      "Accept": "application/json",
-      "Authorization": `ApiKey ${apiKey}`,
+      Accept: "application/json",
+      Authorization: authHeader,
       ...(options?.body ? { "Content-Type": "application/json" } : {}),
     },
     ...(options?.body ? { body: JSON.stringify(options.body) } : {}),
@@ -69,7 +83,7 @@ export async function morgenFetch<T>(
 
     if (response.status === 401) {
       throw new MorgenApiError(
-        "Invalid API key. Check your MORGEN_API_KEY.",
+        "Authentication failed. Run 'morgen auth' or check MORGEN_API_KEY.",
         401,
         body
       );
