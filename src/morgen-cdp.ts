@@ -21,7 +21,8 @@ const DEFAULT_PORT = 9223;
 const SESSION_FILE = resolve(homedir(), ".config", "morgen-cli", "session.json");
 
 export interface SessionInfo {
-  token: string;
+  token: string; // AI gateway token (for ai.cf.morgen.so)
+  apiToken: string; // Regular API token (for api.morgen.so)
   refreshToken: string;
   deviceId: string;
   expiresAt: number; // Unix timestamp ms
@@ -92,7 +93,8 @@ async function exchangeForSession(
   if (!data.token) throw new Error("No token in refresh response");
 
   return {
-    token: data.token,
+    token: data.aiToken || data.token, // AI gateway token (preferred for chat)
+    apiToken: data.token, // Regular API token (for api.morgen.so)
     refreshToken: data.refreshToken || refreshToken,
     deviceId,
     expiresAt: Date.now() + (data.expiresIn || 3600) * 1000,
