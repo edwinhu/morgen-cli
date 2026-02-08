@@ -116,6 +116,11 @@ export const TOOL_DEFINITIONS = [
             type: "string",
             description: "Comma-separated list of attendee emails.",
           },
+          taskId: {
+            type: "string",
+            description:
+              "If scheduling a task on the calendar, provide the task ID here. This links the event to the task so it can be completed from the calendar.",
+          },
         },
         required: ["summary", "start", "end", "timeZone"],
         additionalProperties: false,
@@ -380,6 +385,7 @@ async function executeEventCreate(args: {
   timeZone: string;
   isAllDay?: boolean;
   attendees?: string;
+  taskId?: string;
 }): Promise<string> {
   const calendars = await listCalendars();
   const cal = args.calendarId
@@ -414,6 +420,13 @@ async function executeEventCreate(args: {
     body.participants = args.attendees.split(",").map((email: string) => ({
       email: email.trim(),
     }));
+  }
+
+  if (args.taskId) {
+    body["morgen.so:metadata"] = {
+      taskId: args.taskId,
+      isAutoScheduled: true,
+    };
   }
 
   const id = await createEvent(body as any);

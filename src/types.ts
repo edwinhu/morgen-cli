@@ -170,6 +170,10 @@ export interface CreateEventInput {
   timeZone: string;
   showWithoutTime: boolean;
   description?: string;
+  "morgen.so:metadata"?: {
+    taskId?: string;
+    isAutoScheduled?: boolean;
+  };
 }
 
 // Decoded Morgen integration task ID

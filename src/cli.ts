@@ -543,7 +543,7 @@ async function handleTasks(opts: CliOptions) {
       process.exit(1);
     }
 
-    // Integration tasks can't be linked to events
+    // Integration tasks can't be scheduled
     if (decodeIntegrationId(opts.positional)) {
       error("Only Morgen-native tasks can be scheduled. Integration tasks are not supported.");
       process.exit(1);
@@ -558,7 +558,7 @@ async function handleTasks(opts: CliOptions) {
     const calendars = await listCalendars();
     const cal = opts.calendarId
       ? calendars.find((c) => c.id === opts.calendarId)
-      : calendars.find((c) => c.myRights?.mayWrite || c.myRights?.mayWriteAll);
+      : calendars.find((c) => c.myRights?.mayWriteAll || c.myRights?.mayWriteOwn);
 
     if (!cal) {
       error("No writable calendar found. Use --calendar-id to specify one.");
@@ -573,13 +573,16 @@ async function handleTasks(opts: CliOptions) {
       duration,
       timeZone: tz,
       showWithoutTime: false,
+      "morgen.so:metadata": {
+        taskId: opts.positional,
+        isAutoScheduled: true,
+      },
     });
 
     if (opts.json) {
       console.log(JSON.stringify({ eventId, taskId: task.id, calendar: cal.name }));
     } else {
-      success(`Task "${task.title}" scheduled on "${cal.name}" as event: ${eventId}`);
-      info("Note: The Morgen API does not support linking events to tasks. The event is created as a standalone calendar entry.");
+      success(`Task "${task.title}" scheduled on "${cal.name}"`);
     }
     return;
   }

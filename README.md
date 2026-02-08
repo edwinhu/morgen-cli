@@ -42,7 +42,7 @@ morgen tasks schedule <id> --start 2026-02-10T10:00:00  # Schedule on calendar
 
 Options: `--title`, `--description`, `--due`, `--duration`, `--priority` (1-9), `--tags`, `--list`, `--calendar-id`
 
-> **Note:** `tasks schedule` creates a standalone calendar event using the task's title and estimated duration. The Morgen API does not support linking events to tasks — that feature is only available in the desktop app.
+> `tasks schedule` creates a linked task-event on the calendar. The task shows as scheduled in Morgen and can be completed directly from the calendar.
 
 ### Calendar
 
@@ -66,7 +66,7 @@ morgen chat "Create a task to review the PR"
 morgen chat "Find me 2 free hours this week"
 ```
 
-The AI assistant has access to calendar and task tools — it can read events, create/update/delete events, list/create/update/close/reopen/delete tasks.
+The AI assistant has access to calendar and task tools — it can read events, create/update/delete events, list/create/update/close/reopen/delete tasks, and schedule tasks on the calendar with proper task linkage.
 
 **Calendar filtering** for availability queries:
 
