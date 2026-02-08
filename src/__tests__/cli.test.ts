@@ -119,6 +119,31 @@ describe("morgen CLI", () => {
     expect(stderr).toContain("prompt");
   });
 
+  it("help text includes tasks schedule command", async () => {
+    const proc = Bun.spawn(["bun", "run", CLI, "--help"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = await new Response(proc.stdout).text();
+    await proc.exited;
+    expect(stdout).toContain("tasks schedule");
+    expect(stdout).toContain("--task");
+  });
+
+  it("tasks schedule requires task id and --start", async () => {
+    const env = { ...process.env, MORGEN_API_KEY: "test-key" };
+
+    const proc = Bun.spawn(["bun", "run", CLI, "tasks", "schedule"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env,
+    });
+    const stderr = await new Response(proc.stderr).text();
+    const exitCode = await proc.exited;
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("schedule");
+  });
+
   it("chat command without session token shows auth error", async () => {
     // Ensure no session file exists by using a non-existent config dir
     const env = {

@@ -64,6 +64,7 @@ export interface MorgenEvent {
   freeBusyStatus?: string;
   privacy?: string;
   recurrenceRules?: string[];
+  taskId?: string;            // Links this event to a task (scheduled task block)
 }
 
 export interface MorgenParticipant {
@@ -164,6 +165,7 @@ export interface CreateEventInput {
   timeZone: string;
   showWithoutTime: boolean;
   description?: string;
+  taskId?: string;            // Link event to a task (creates a scheduled task block)
 }
 
 // Decoded Morgen integration task ID

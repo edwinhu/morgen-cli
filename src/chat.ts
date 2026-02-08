@@ -47,6 +47,7 @@ function buildSystemPrompt(filter?: CalendarFilter): string {
     "When the user asks about their tasks or to-dos, use the taskList tool.",
     "You can create, update, close (complete), reopen, and delete tasks.",
     "Note: create, update, and delete only work on Morgen-native tasks. Close and reopen work on integration tasks too.",
+    "When the user wants to schedule a task on their calendar, first use taskList to find the task, then use eventCreate with the taskId parameter to create a calendar event linked to the task.",
   ];
 
   if (filter?.calendarIds?.length) {

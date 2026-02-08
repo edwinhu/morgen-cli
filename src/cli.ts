@@ -14,6 +14,7 @@ import {
   reopenTask,
   deleteTask,
   moveTask,
+  decodeIntegrationId,
 } from "./tasks";
 import {
   listCalendars,
@@ -93,6 +94,8 @@ interface CliOptions {
   calendars?: string[];
   excludeCalendars?: string[];
   onlyPrimary?: boolean;
+  // Task-to-calendar linking
+  task?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +189,8 @@ function setNamedArg(opts: CliOptions, key: string, value: string): void {
     // Chat calendar filtering
     case "calendars": opts.calendars = value.split(",").map((s) => s.trim()); break;
     case "exclude-calendars": opts.excludeCalendars = value.split(",").map((s) => s.trim()); break;
+    // Task-to-calendar linking
+    case "task": opts.task = value; break;
   }
 }
 
@@ -248,6 +253,7 @@ ${colors.bold}COMMANDS${colors.reset}
   ${colors.cyan}tasks reopen${colors.reset} <id>   Reopen a completed task (all providers)
   ${colors.cyan}tasks delete${colors.reset} <id>   Delete a task (Morgen-native)
   ${colors.cyan}tasks move${colors.reset} <id>    Move/reorder a task (--after, --parent)
+  ${colors.cyan}tasks schedule${colors.reset} <id> Schedule a task on the calendar (--start)
   ${colors.cyan}calendar${colors.reset}           List all calendars
   ${colors.cyan}calendar events${colors.reset}    List events (--start, --end)
   ${colors.cyan}calendar create${colors.reset}    Create an event (--title, --start, --end)
@@ -271,6 +277,7 @@ ${colors.bold}OPTIONS${colors.reset}
   --parent <id>       Set parent task ID (for move)
   --account <id>      Filter tasks by integration account ID
   --all               List tasks from all connected accounts
+  --task <id>         Link event to a task (for calendar create)
   --calendar-id <id>  Calendar ID (for event create)
   --start <datetime>  Start time (ISO format or YYYY-MM-DD)
   --end <datetime>    End time (ISO format or YYYY-MM-DD)
@@ -312,6 +319,12 @@ ${colors.bold}EXAMPLES${colors.reset}
 
   ${colors.dim}# Create a calendar event${colors.reset}
   morgen calendar create --title "Meeting" --start 2026-02-10T14:00:00 --end 2026-02-10T15:00:00
+
+  ${colors.dim}# Schedule a task on the calendar${colors.reset}
+  morgen tasks schedule <task-id> --start 2026-02-10T10:00:00
+
+  ${colors.dim}# Create an event linked to a task${colors.reset}
+  morgen calendar create --title "Work on PR" --start 2026-02-10T14:00:00 --end 2026-02-10T15:00:00 --task <task-id>
 
   ${colors.dim}# Find free time slots${colors.reset}
   morgen calendar free --start 2026-02-10T09:00:00 --end 2026-02-10T17:00:00
@@ -528,6 +541,57 @@ async function handleTasks(opts: CliOptions) {
     return;
   }
 
+  if (sub === "schedule") {
+    if (!opts.positional) {
+      error("Usage: morgen tasks schedule <task-id> --start <datetime>");
+      process.exit(1);
+    }
+    if (!opts.start) {
+      error("--start is required for scheduling a task");
+      process.exit(1);
+    }
+
+    // Integration tasks can't be linked to events
+    if (decodeIntegrationId(opts.positional)) {
+      error("Only Morgen-native tasks can be scheduled. Integration tasks are not supported.");
+      process.exit(1);
+    }
+
+    // Fetch the task to get title and estimatedDuration
+    const task = await getTask(opts.positional);
+    const tz = opts.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const duration = opts.duration || task.estimatedDuration || "PT1H";
+
+    // Find a writable calendar
+    const calendars = await listCalendars();
+    const cal = opts.calendarId
+      ? calendars.find((c) => c.id === opts.calendarId)
+      : calendars.find((c) => c.myRights?.mayWrite);
+
+    if (!cal) {
+      error("No writable calendar found. Use --calendar-id to specify one.");
+      process.exit(1);
+    }
+
+    const eventId = await createEvent({
+      accountId: cal.accountId,
+      calendarId: cal.id,
+      title: task.title,
+      start: opts.start,
+      duration,
+      timeZone: tz,
+      showWithoutTime: false,
+      taskId: task.id,
+    });
+
+    if (opts.json) {
+      console.log(JSON.stringify({ eventId, taskId: task.id }));
+    } else {
+      success(`Task "${task.title}" scheduled on "${cal.name}" as event: ${eventId}`);
+    }
+    return;
+  }
+
   error(`Unknown tasks subcommand: ${sub}`);
   info("Run 'morgen help' for usage");
   process.exit(1);
@@ -658,6 +722,7 @@ async function handleCalendar(opts: CliOptions) {
       timeZone: tz,
       showWithoutTime: opts.allDay ?? false,
       ...(opts.description ? { description: opts.description } : {}),
+      ...(opts.task ? { taskId: opts.task } : {}),
     });
 
     if (opts.json) {

@@ -277,6 +277,63 @@ describe("executeTool", () => {
     expect(parsed.success).toBe(true);
   });
 
+  it("eventCreate passes taskId to API when provided", async () => {
+    globalThis.fetch = (async (
+      input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      const url = String(input);
+
+      if (url.includes("/calendars/list")) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              calendars: [
+                {
+                  id: "cal-1",
+                  accountId: "acc-1",
+                  integrationId: "google",
+                  name: "Work",
+                  myRights: { mayRead: true, mayWrite: true },
+                },
+              ],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      if (url.includes("/events/create")) {
+        lastRequest = { url, init };
+        return new Response(
+          JSON.stringify({ data: { id: "ev-new" } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const result = await executeTool(
+      "eventCreate",
+      '{"summary":"Work on PR","start":"2026-02-10T10:00:00","end":"2026-02-10T11:00:00","timeZone":"America/New_York","taskId":"task-abc"}'
+    );
+    const parsed = JSON.parse(result);
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.id).toBe("ev-new");
+
+    const body = JSON.parse(lastRequest!.init?.body as string);
+    expect(body.taskId).toBe("task-abc");
+  });
+
+  it("eventCreate tool definition includes taskId parameter", () => {
+    const eventCreate = TOOL_DEFINITIONS.find(
+      (t) => t.function.name === "eventCreate"
+    )!;
+    expect(eventCreate.function.parameters.properties).toHaveProperty("taskId");
+  });
+
   it("taskDelete calls /v3/tasks/delete with id", async () => {
     globalThis.fetch = (async (
       input: string | URL | Request,
