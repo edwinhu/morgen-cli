@@ -150,3 +150,49 @@ export interface CreateEventInput {
   showWithoutTime: boolean;
   description?: string;
 }
+
+// Chat types (for ai.cf.morgen.so/openrouter/chat/completions)
+export interface ChatMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+}
+
+export interface ChatToolCall {
+  name: string;
+  arguments: string;
+}
+
+export interface ChatCompletionChunkDelta {
+  role?: string;
+  content?: string | null;
+  tool_calls?: Array<{
+    id?: string;
+    index: number;
+    type?: string;
+    function: { name?: string; arguments?: string };
+  }>;
+}
+
+export interface ChatCompletionChunk {
+  id: string;
+  model: string;
+  choices: Array<{
+    index: number;
+    delta: ChatCompletionChunkDelta;
+    finish_reason: string | null;
+  }>;
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+}
+
+export interface ChatResponse {
+  text: string;
+  toolCalls?: ChatToolCall[];
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+  };
+}

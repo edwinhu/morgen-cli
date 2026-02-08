@@ -73,4 +73,47 @@ describe("morgen CLI", () => {
     expect(exitCode).not.toBe(0);
     expect(stderr).toContain("--title");
   });
+
+  it("help text includes chat command", async () => {
+    const proc = Bun.spawn(["bun", "run", CLI, "--help"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = await new Response(proc.stdout).text();
+    await proc.exited;
+    expect(stdout).toContain("chat");
+  });
+
+  it("chat command without prompt shows error", async () => {
+    const env = { ...process.env, MORGEN_API_KEY: "test-key" };
+
+    const proc = Bun.spawn(["bun", "run", CLI, "chat"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env,
+    });
+    const stderr = await new Response(proc.stderr).text();
+    const exitCode = await proc.exited;
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("prompt");
+  });
+
+  it("chat command without session token shows auth error", async () => {
+    // Ensure no session file exists by using a non-existent config dir
+    const env = {
+      ...process.env,
+      MORGEN_API_KEY: "test-key",
+      HOME: "/tmp/morgen-cli-test-nonexistent",
+    };
+
+    const proc = Bun.spawn(["bun", "run", CLI, "chat", "hello"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env,
+    });
+    const stderr = await new Response(proc.stderr).text();
+    const exitCode = await proc.exited;
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("auth");
+  });
 });

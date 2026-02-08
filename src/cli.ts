@@ -13,6 +13,7 @@ import {
   deleteTask,
   moveTask,
 } from "./tasks";
+import { sendChat } from "./chat";
 import { MorgenApiError } from "./morgen-api";
 import type { MorgenTask, CreateTaskInput, UpdateTaskInput } from "./types";
 import pkg from "../package.json";
@@ -51,6 +52,7 @@ interface CliOptions {
   command: string;
   subCommand?: string;
   positional?: string;
+  restArgs: string[];
   title?: string;
   description?: string;
   due?: string;
@@ -78,6 +80,7 @@ const ID_SUBCOMMANDS = new Set(["get", "update", "close", "reopen", "delete", "m
 function parseArgs(args: string[]): CliOptions {
   const opts: CliOptions = {
     command: "",
+    restArgs: [],
     json: false,
     help: false,
     version: false,
@@ -154,6 +157,10 @@ function parseArgs(args: string[]): CliOptions {
   if (positionals.length > 0) opts.command = positionals[0];
   if (positionals.length > 1) opts.subCommand = positionals[1];
   if (positionals.length > 2) opts.positional = positionals[2];
+
+  // Capture all positionals after the command for commands like "chat"
+  // that consume all remaining words as a single prompt
+  if (positionals.length > 1) opts.restArgs = positionals.slice(1);
 
   // For grouped commands (like "tasks get <id>"), if subCommand expects an ID
   // and we have a third positional, it's the ID. But if we only have two
@@ -252,6 +259,7 @@ ${colors.bold}COMMANDS${colors.reset}
   ${colors.cyan}tasks reopen${colors.reset} <id>   Reopen a completed task
   ${colors.cyan}tasks delete${colors.reset} <id>   Delete a task
   ${colors.cyan}tasks move${colors.reset} <id>    Move/reorder a task (--after, --parent)
+  ${colors.cyan}chat${colors.reset} <prompt>       Chat with Morgen AI assistant
   ${colors.cyan}help${colors.reset}               Show this help message
 
 ${colors.bold}OPTIONS${colors.reset}
@@ -283,6 +291,10 @@ ${colors.bold}EXAMPLES${colors.reset}
   ${colors.dim}# Update and complete${colors.reset}
   morgen tasks update abc123 --title "Updated title"
   morgen tasks close abc123
+
+  ${colors.dim}# Chat with Morgen AI${colors.reset}
+  morgen chat "What is on my calendar today?"
+  morgen chat summarize my week --json
 
 ${colors.bold}ENVIRONMENT${colors.reset}
   MORGEN_API_KEY      API key from https://platform.morgen.so
@@ -455,6 +467,37 @@ async function handleTasks(opts: CliOptions) {
 }
 
 // ---------------------------------------------------------------------------
+// Chat handler
+// ---------------------------------------------------------------------------
+async function handleChat(opts: CliOptions) {
+  const prompt = opts.restArgs.join(" ").trim();
+
+  if (!prompt) {
+    error("Usage: morgen chat <prompt>");
+    info("Provide a prompt, e.g.: morgen chat \"What is on my calendar today?\"");
+    process.exit(1);
+  }
+
+  if (opts.json) {
+    const result = await sendChat(prompt);
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    const result = await sendChat(prompt, {
+      onToken: (text: string) => process.stdout.write(text),
+    });
+    // Ensure final newline after streamed output
+    process.stdout.write("\n");
+
+    // Display tool call info if any
+    if (result.toolCalls) {
+      for (const tc of result.toolCalls) {
+        info(`AI called: ${tc.name}(${tc.arguments})`);
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main entry
 // ---------------------------------------------------------------------------
 async function main() {
@@ -481,6 +524,11 @@ async function main() {
 
     if (opts.command === "tasks") {
       await handleTasks(opts);
+      return;
+    }
+
+    if (opts.command === "chat") {
+      await handleChat(opts);
       return;
     }
 
