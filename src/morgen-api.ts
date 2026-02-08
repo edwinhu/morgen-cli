@@ -27,10 +27,10 @@ export class MorgenApiError extends Error {
  * Prefers session token (enables integration CRUD) over API key.
  */
 async function getAuthHeader(): Promise<string> {
-  // Try session token first
+  // Try session token first (use apiToken, not aiToken)
   const session = await loadSession();
   if (session) {
-    return `Bearer ${session.token}`;
+    return `Bearer ${session.apiToken}`;
   }
 
   // Fall back to API key

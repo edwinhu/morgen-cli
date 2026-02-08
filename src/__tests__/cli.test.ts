@@ -45,10 +45,11 @@ describe("morgen CLI", () => {
     expect(stderr).toContain("Unknown command");
   });
 
-  it("tasks command fails without API key", async () => {
+  it("tasks command fails without any auth", async () => {
     // Bun auto-loads .env, so we need a tmpdir without one
+    // Also override HOME to prevent session-based auth
     const tmpdir = (await import("os")).tmpdir();
-    const env = { ...process.env, MORGEN_API_KEY: "" };
+    const env = { ...process.env, MORGEN_API_KEY: "", HOME: "/tmp/morgen-test-no-auth" };
 
     const proc = Bun.spawn(["bun", "run", CLI, "tasks"], {
       stdout: "pipe",
@@ -59,7 +60,7 @@ describe("morgen CLI", () => {
     const stderr = await new Response(proc.stderr).text();
     const exitCode = await proc.exited;
     expect(exitCode).not.toBe(0);
-    expect(stderr).toContain("MORGEN_API_KEY");
+    expect(stderr).toContain("authentication");
   });
 
   it("help shows auth and accounts commands", async () => {

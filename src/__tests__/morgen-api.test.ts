@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 
+// Mock loadSession to return null so we can test API-key-only auth paths
+mock.module("../morgen-cdp", () => ({
+  loadSession: async () => null,
+}));
+
 describe("morgenFetch", () => {
   const originalEnv = process.env.MORGEN_API_KEY;
 
@@ -15,13 +20,11 @@ describe("morgenFetch", () => {
     }
   });
 
-  it("should throw if MORGEN_API_KEY is not set", async () => {
+  it("should throw if no auth is available", async () => {
     delete process.env.MORGEN_API_KEY;
 
-    // Need to re-import to get fresh module
     const { morgenFetch } = await import("../morgen-api");
-
-    expect(morgenFetch("/tasks/list")).rejects.toThrow("MORGEN_API_KEY");
+    await expect(morgenFetch("/tasks/list")).rejects.toThrow("authentication");
   });
 
   it("should include ApiKey header in requests", async () => {
