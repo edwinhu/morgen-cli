@@ -1,0 +1,95 @@
+# morgen-cli
+
+CLI for [Morgen](https://morgen.so) calendar and task management. Manage tasks, calendars, events, and chat with an AI assistant — all from the terminal.
+
+## Install
+
+```bash
+bun install
+bun build src/cli.ts --compile --outfile morgen
+```
+
+## Auth
+
+Two auth modes:
+
+1. **API key** (basic): Set `MORGEN_API_KEY` from [platform.morgen.so](https://platform.morgen.so)
+2. **Session token** (full access): Run `morgen auth` with the Morgen desktop app open:
+   ```bash
+   /Applications/Morgen.app/Contents/MacOS/Morgen --remote-debugging-port=9223
+   morgen auth
+   ```
+
+Session auth enables close/reopen on integration tasks (Google Tasks, MS To Do) and AI chat.
+
+## Commands
+
+### Tasks
+
+```bash
+morgen tasks                          # List Morgen-native tasks
+morgen tasks --all                    # List from all connected accounts
+morgen tasks --account <id>           # List from specific account
+morgen tasks get <id>                 # Get task details
+morgen tasks create --title "Do X"    # Create task
+morgen tasks update <id> --title "Y"  # Update task
+morgen tasks close <id>               # Mark complete
+morgen tasks reopen <id>              # Reopen completed task
+morgen tasks delete <id>              # Delete task
+morgen tasks move <id> --after <id>   # Reorder task
+```
+
+Options: `--title`, `--description`, `--due`, `--duration`, `--priority` (1-9), `--tags`, `--list`
+
+### Calendar
+
+```bash
+morgen calendar                       # List all calendars
+morgen calendar events                # Today's events
+morgen calendar events --start 2026-02-10 --end 2026-02-11
+morgen calendar create --title "Meeting" --start 2026-02-10T14:00:00 --end 2026-02-10T15:00:00
+morgen calendar update <event-id> --title "New Title"
+morgen calendar delete <event-id>
+morgen calendar free --start 2026-02-10T09:00:00 --end 2026-02-10T17:00:00
+```
+
+Options: `--calendar-id`, `--start`, `--end`, `--timezone`, `--location`, `--attendees`, `--all-day`, `--min-minutes`
+
+### AI Chat
+
+```bash
+morgen chat "What's on my calendar today?"
+morgen chat "Create a task to review the PR"
+morgen chat "Find me 2 free hours this week"
+```
+
+The AI assistant has access to calendar and task tools — it can read events, create/update/delete events, list/create/update/close/reopen/delete tasks.
+
+**Calendar filtering** for availability queries:
+
+```bash
+morgen chat "find free time" --calendars Work,Personal
+morgen chat "am I free Friday?" --exclude-calendars Family,Holidays
+morgen chat "schedule focus time" --only-primary
+```
+
+### Other
+
+```bash
+morgen accounts                       # Show connected task accounts
+morgen auth                           # Authenticate via Morgen app
+morgen --json <any command>           # JSON output
+morgen --help                         # Full help
+```
+
+## Development
+
+```bash
+bun install
+bun test                              # Run tests (59 pass)
+bun run src/cli.ts <command>          # Run without building
+```
+
+## License
+
+Private — not published.
