@@ -277,7 +277,7 @@ describe("executeTool", () => {
     expect(parsed.success).toBe(true);
   });
 
-  it("eventCreate passes taskId to API when provided", async () => {
+  it("eventCreate creates event with correct fields", async () => {
     globalThis.fetch = (async (
       input: string | URL | Request,
       init?: RequestInit
@@ -294,7 +294,7 @@ describe("executeTool", () => {
                   accountId: "acc-1",
                   integrationId: "google",
                   name: "Work",
-                  myRights: { mayRead: true, mayWrite: true },
+                  myRights: { mayRead: true, mayWriteAll: true },
                 },
               ],
             },
@@ -306,7 +306,7 @@ describe("executeTool", () => {
       if (url.includes("/events/create")) {
         lastRequest = { url, init };
         return new Response(
-          JSON.stringify({ data: { id: "ev-new" } }),
+          JSON.stringify({ data: { event: { id: "ev-new" } } }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
@@ -316,7 +316,7 @@ describe("executeTool", () => {
 
     const result = await executeTool(
       "eventCreate",
-      '{"summary":"Work on PR","start":"2026-02-10T10:00:00","end":"2026-02-10T11:00:00","timeZone":"America/New_York","taskId":"task-abc"}'
+      '{"summary":"Work on PR","start":"2026-02-10T10:00:00","end":"2026-02-10T11:00:00","timeZone":"America/New_York"}'
     );
     const parsed = JSON.parse(result);
 
@@ -324,14 +324,9 @@ describe("executeTool", () => {
     expect(parsed.id).toBe("ev-new");
 
     const body = JSON.parse(lastRequest!.init?.body as string);
-    expect(body.taskId).toBe("task-abc");
-  });
-
-  it("eventCreate tool definition includes taskId parameter", () => {
-    const eventCreate = TOOL_DEFINITIONS.find(
-      (t) => t.function.name === "eventCreate"
-    )!;
-    expect(eventCreate.function.parameters.properties).toHaveProperty("taskId");
+    expect(body.title).toBe("Work on PR");
+    expect(body.accountId).toBe("acc-1");
+    expect(body.calendarId).toBe("cal-1");
   });
 
   it("taskDelete calls /v3/tasks/delete with id", async () => {

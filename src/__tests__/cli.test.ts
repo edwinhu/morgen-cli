@@ -127,7 +127,6 @@ describe("morgen CLI", () => {
     const stdout = await new Response(proc.stdout).text();
     await proc.exited;
     expect(stdout).toContain("tasks schedule");
-    expect(stdout).toContain("--task");
   });
 
   it("tasks schedule requires task id and --start", async () => {

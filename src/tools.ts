@@ -116,11 +116,6 @@ export const TOOL_DEFINITIONS = [
             type: "string",
             description: "Comma-separated list of attendee emails.",
           },
-          taskId: {
-            type: "string",
-            description:
-              "Optional task ID to link this event to. Creates a scheduled task block on the calendar. Use taskList to find the task ID first.",
-          },
         },
         required: ["summary", "start", "end", "timeZone"],
         additionalProperties: false,
@@ -372,7 +367,7 @@ async function executeCalendarList(): Promise<string> {
     name: c.name,
     accountId: c.accountId,
     color: c.color,
-    canWrite: c.myRights?.mayWrite ?? false,
+    canWrite: c.myRights?.mayWrite || c.myRights?.mayWriteAll || false,
   }));
   return JSON.stringify(formatted);
 }
@@ -385,12 +380,11 @@ async function executeEventCreate(args: {
   timeZone: string;
   isAllDay?: boolean;
   attendees?: string;
-  taskId?: string;
 }): Promise<string> {
   const calendars = await listCalendars();
   const cal = args.calendarId
     ? calendars.find((c) => c.id === args.calendarId)
-    : calendars.find((c) => c.myRights?.mayWrite);
+    : calendars.find((c) => c.myRights?.mayWrite || c.myRights?.mayWriteAll);
 
   if (!cal) {
     return JSON.stringify({ error: "Calendar not found or not writable" });
@@ -415,10 +409,6 @@ async function executeEventCreate(args: {
     timeZone: args.timeZone,
     showWithoutTime: args.isAllDay ?? false,
   };
-
-  if (args.taskId) {
-    body.taskId = args.taskId;
-  }
 
   if (args.attendees) {
     body.participants = args.attendees.split(",").map((email: string) => ({

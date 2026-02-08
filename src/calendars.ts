@@ -96,11 +96,11 @@ export async function listEvents(
 }
 
 export async function createEvent(input: CreateEventInput): Promise<string> {
-  const resp = await morgenFetch<{ data: { id: string } }>("/events/create", {
+  const resp = await morgenFetch<{ data: { event: { id: string } } }>("/events/create", {
     method: "POST",
     body: input,
   });
-  return resp.data.id;
+  return resp.data.event.id;
 }
 
 export async function updateEvent(
