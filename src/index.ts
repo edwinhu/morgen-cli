@@ -14,5 +14,6 @@ export {
   moveTask,
 } from "./tasks.ts";
 export { sendChat, parseSSEStream } from "./chat.ts";
+export { TOOL_DEFINITIONS, executeTool } from "./tools.ts";
 export type { ListTasksOptions } from "./tasks.ts";
 export type * from "./types.ts";

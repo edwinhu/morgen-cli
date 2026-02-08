@@ -151,13 +151,29 @@ export interface CreateEventInput {
   description?: string;
 }
 
+// Calendar list response (from /v3/calendars/list)
+export interface CalendarListApiResponse {
+  data: {
+    calendars: MorgenCalendar[];
+  };
+}
+
 // Chat types (for ai.cf.morgen.so/openrouter/chat/completions)
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content: string;
+  content: string | null;
+  tool_calls?: ChatMessageToolCall[];
+  tool_call_id?: string;
+}
+
+export interface ChatMessageToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
 }
 
 export interface ChatToolCall {
+  id: string;
   name: string;
   arguments: string;
 }

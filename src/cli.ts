@@ -484,16 +484,15 @@ async function handleChat(opts: CliOptions) {
   } else {
     const result = await sendChat(prompt, {
       onToken: (text: string) => process.stdout.write(text),
+      onToolCall: (name: string, args: string) => {
+        // Show tool execution on stderr so it doesn't mix with streamed output
+        process.stderr.write(
+          `${colors.dim}[tool] ${name}(${args.length > 80 ? args.slice(0, 80) + "..." : args})${colors.reset}\n`
+        );
+      },
     });
     // Ensure final newline after streamed output
     process.stdout.write("\n");
-
-    // Display tool call info if any
-    if (result.toolCalls) {
-      for (const tc of result.toolCalls) {
-        info(`AI called: ${tc.name}(${tc.arguments})`);
-      }
-    }
   }
 }
 

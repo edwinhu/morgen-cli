@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import type {
   ChatMessage,
+  ChatMessageToolCall,
   ChatToolCall,
   ChatCompletionChunkDelta,
   ChatCompletionChunk,
@@ -8,7 +9,7 @@ import type {
 } from "../types";
 
 // Mock morgen-cdp BEFORE importing chat module
-let mockLoadSessionResult: { token: string; refreshToken: string; deviceId: string; expiresAt: number } | null = null;
+let mockLoadSessionResult: { token: string; apiToken: string; refreshToken: string; deviceId: string; expiresAt: number } | null = null;
 
 mock.module("../morgen-cdp", () => ({
   loadSession: () => Promise.resolve(mockLoadSessionResult),
@@ -48,12 +49,14 @@ describe("Chat types", () => {
     expect(messages[3].role).toBe("tool");
   });
 
-  it("ChatToolCall has name and arguments", () => {
+  it("ChatToolCall has id, name and arguments", () => {
     const toolCall: ChatToolCall = {
+      id: "call_123",
       name: "get_weather",
       arguments: '{"city": "San Francisco"}',
     };
 
+    expect(toolCall.id).toBe("call_123");
     expect(toolCall.name).toBe("get_weather");
     expect(toolCall.arguments).toBe('{"city": "San Francisco"}');
   });
@@ -135,7 +138,7 @@ describe("Chat types", () => {
     const full: ChatResponse = {
       text: "",
       toolCalls: [
-        { name: "search", arguments: '{"query":"test"}' },
+        { id: "call_1", name: "search", arguments: '{"query":"test"}' },
       ],
       usage: {
         prompt_tokens: 50,
@@ -295,6 +298,7 @@ describe("sendChat", () => {
     // Default: session available
     mockLoadSessionResult = {
       token: "test-jwt-token",
+      apiToken: "test-api-token",
       refreshToken: "test-refresh",
       deviceId: "test-device",
       expiresAt: Date.now() + 3600000,
@@ -363,7 +367,11 @@ describe("sendChat", () => {
     const body = JSON.parse(lastRequest!.init?.body as string);
     expect(body.model).toBe("anthropic/claude-haiku-4.5");
     expect(body.stream).toBe(true);
-    expect(body.messages).toEqual([{ role: "user", content: "test prompt" }]);
+    // First message is system prompt, second is user message
+    expect(body.messages).toHaveLength(2);
+    expect(body.messages[0].role).toBe("system");
+    expect(body.messages[0].content).toContain("calendar");
+    expect(body.messages[1]).toEqual({ role: "user", content: "test prompt" });
   });
 
   it("assembles text from content deltas and returns ChatResponse", async () => {
@@ -430,8 +438,12 @@ describe("sendChat", () => {
     expect(tokens).toEqual(["A", "B"]);
   });
 
-  it("includes tool calls in response when AI returns them", async () => {
-    const chunks = [
+  it("executes tool calls and sends results back to AI", async () => {
+    // Track AI endpoint fetch calls to simulate the multi-turn loop
+    let aiCallCount = 0;
+
+    // First AI call: AI requests a tool call
+    const toolCallChunks = [
       {
         id: "c4",
         model: "test",
@@ -444,43 +456,7 @@ describe("sendChat", () => {
                   id: "call_1",
                   index: 0,
                   type: "function",
-                  function: { name: "create_task", arguments: "" },
-                },
-              ],
-            },
-            finish_reason: null,
-          },
-        ],
-      },
-      {
-        id: "c4",
-        model: "test",
-        choices: [
-          {
-            index: 0,
-            delta: {
-              tool_calls: [
-                {
-                  index: 0,
-                  function: { arguments: '{"title":' },
-                },
-              ],
-            },
-            finish_reason: null,
-          },
-        ],
-      },
-      {
-        id: "c4",
-        model: "test",
-        choices: [
-          {
-            index: 0,
-            delta: {
-              tool_calls: [
-                {
-                  index: 0,
-                  function: { arguments: '"Buy milk"}' },
+                  function: { name: "calendarRead", arguments: '{"start":"2026-02-07","end":"2026-02-08"}' },
                 },
               ],
             },
@@ -495,17 +471,84 @@ describe("sendChat", () => {
       },
     ];
 
-    mockSSEFetch([
-      ...chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`),
-      "data: [DONE]\n\n",
-    ]);
+    // Second AI call: AI responds with text based on tool results
+    const textChunks = [
+      {
+        id: "c5",
+        model: "test",
+        choices: [{ index: 0, delta: { content: "You have a meeting today." }, finish_reason: null }],
+      },
+      {
+        id: "c5",
+        model: "test",
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      },
+    ];
 
-    const result = await sendChat("create a task to buy milk");
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
 
-    expect(result.toolCalls).toBeDefined();
-    expect(result.toolCalls).toHaveLength(1);
-    expect(result.toolCalls![0].name).toBe("create_task");
-    expect(result.toolCalls![0].arguments).toBe('{"title":"Buy milk"}');
+      // AI chat endpoint calls (SSE)
+      if (url.includes("ai.cf.morgen.so")) {
+        lastRequest = { url, init };
+        aiCallCount++;
+        const chunks = aiCallCount === 1 ? toolCallChunks : textChunks;
+        const stream = createSSEStream([
+          ...chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`),
+          "data: [DONE]\n\n",
+        ]);
+        return new Response(stream, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }
+
+      // Morgen API calls from tool execution
+      if (url.includes("/calendars/list")) {
+        return new Response(
+          JSON.stringify({ data: { calendars: [{ id: "cal-1", accountId: "acc-1", name: "Work" }] } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (url.includes("/events/list")) {
+        return new Response(
+          JSON.stringify({ data: { events: [
+            { id: "ev-1", calendarId: "cal-1", title: "Team Standup", start: "2026-02-07T09:00:00Z", duration: "PT30M", timeZone: "America/New_York", showWithoutTime: false },
+          ] } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      return new Response("Not found", { status: 404 });
+    }) as typeof fetch;
+
+    // Need MORGEN_API_KEY for tool execution
+    const origKey = process.env.MORGEN_API_KEY;
+    process.env.MORGEN_API_KEY = "test-key";
+
+    try {
+      const toolCalls: string[] = [];
+      const result = await sendChat("what's on my calendar today?", {
+        onToolCall: (name) => toolCalls.push(name),
+      });
+
+      // Two AI endpoint calls: initial + after tool execution
+      expect(aiCallCount).toBe(2);
+      // Tool call was executed
+      expect(toolCalls).toEqual(["calendarRead"]);
+      // Final response is the text from the second AI call
+      expect(result.text).toBe("You have a meeting today.");
+      // Second AI request should include tool result messages
+      const body = JSON.parse(lastRequest!.init?.body as string);
+      expect(body.messages).toHaveLength(4); // system + user + assistant(tool_calls) + tool result
+      expect(body.messages[2].role).toBe("assistant");
+      expect(body.messages[2].tool_calls).toHaveLength(1);
+      expect(body.messages[3].role).toBe("tool");
+      expect(body.messages[3].tool_call_id).toBe("call_1");
+    } finally {
+      if (origKey) process.env.MORGEN_API_KEY = origKey;
+      else delete process.env.MORGEN_API_KEY;
+    }
   });
 
   it("throws on non-OK HTTP response", async () => {
