@@ -1,0 +1,206 @@
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { TOOL_DEFINITIONS, executeTool, resetCalendarCache } from "../tools";
+
+describe("TOOL_DEFINITIONS", () => {
+  it("exports tool definitions in OpenAI function calling format", () => {
+    expect(TOOL_DEFINITIONS.length).toBeGreaterThan(0);
+    for (const tool of TOOL_DEFINITIONS) {
+      expect(tool.type).toBe("function");
+      expect(tool.function.name).toBeTruthy();
+      expect(tool.function.description).toBeTruthy();
+      expect(tool.function.parameters.type).toBe("object");
+    }
+  });
+
+  it("includes calendarRead and calendarList tools", () => {
+    const names = TOOL_DEFINITIONS.map((t) => t.function.name);
+    expect(names).toContain("calendarRead");
+    expect(names).toContain("calendarList");
+    expect(names).toContain("eventCreate");
+    expect(names).toContain("eventUpdate");
+    expect(names).toContain("eventDelete");
+  });
+
+  it("calendarRead requires start and end parameters", () => {
+    const calRead = TOOL_DEFINITIONS.find(
+      (t) => t.function.name === "calendarRead"
+    )!;
+    expect(calRead.function.parameters.required).toEqual(["start", "end"]);
+  });
+});
+
+describe("executeTool", () => {
+  const originalFetch = globalThis.fetch;
+  let lastRequest: { url: string; init?: RequestInit } | null = null;
+
+  beforeEach(() => {
+    lastRequest = null;
+    process.env.MORGEN_API_KEY = "test-api-key";
+    resetCalendarCache();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    delete process.env.MORGEN_API_KEY;
+  });
+
+  function mockFetch(responseBody: unknown, status = 200) {
+    globalThis.fetch = (async (
+      input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      lastRequest = { url: String(input), init };
+      return new Response(JSON.stringify(responseBody), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+  }
+
+  it("returns error for unknown tool", async () => {
+    const result = await executeTool("unknownTool", "{}");
+    const parsed = JSON.parse(result);
+    expect(parsed.error).toContain("not available");
+  });
+
+  it("calendarList calls /v3/calendars/list", async () => {
+    mockFetch({
+      data: {
+        calendars: [
+          {
+            "@type": "Calendar",
+            id: "cal-1",
+            accountId: "acc-1",
+            integrationId: "google",
+            name: "Work Calendar",
+            color: "#4285f4",
+            myRights: { mayRead: true, mayWrite: true },
+          },
+        ],
+      },
+    });
+
+    const result = await executeTool("calendarList", "{}");
+    const parsed = JSON.parse(result);
+
+    expect(lastRequest!.url).toContain("/v3/calendars/list");
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].name).toBe("Work Calendar");
+    expect(parsed[0].canWrite).toBe(true);
+  });
+
+  it("calendarRead fetches events across all accounts", async () => {
+    let fetchCount = 0;
+
+    globalThis.fetch = (async (
+      input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      fetchCount++;
+      const url = String(input);
+
+      if (url.includes("/calendars/list")) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              calendars: [
+                { id: "cal-1", accountId: "acc-1", integrationId: "google", name: "Work" },
+                { id: "cal-2", accountId: "acc-1", integrationId: "google", name: "Personal" },
+              ],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      if (url.includes("/events/list")) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              events: [
+                {
+                  "@type": "Event",
+                  id: "ev-1",
+                  calendarId: "cal-1",
+                  title: "Team Standup",
+                  start: "2026-02-07T09:00:00Z",
+                  duration: "PT30M",
+                  timeZone: "America/New_York",
+                  showWithoutTime: false,
+                },
+              ],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const result = await executeTool(
+      "calendarRead",
+      '{"start":"2026-02-07T00:00:00","end":"2026-02-08T00:00:00"}'
+    );
+    const parsed = JSON.parse(result);
+
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].title).toBe("Team Standup");
+    expect(parsed[0].calendar).toBe("Work");
+    // Calendars list + 1 events query (both cals same account)
+    expect(fetchCount).toBe(2);
+  });
+
+  it("calendarRead caches calendar list across calls", async () => {
+    let calendarListCalls = 0;
+
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/calendars/list")) {
+        calendarListCalls++;
+        return new Response(
+          JSON.stringify({
+            data: { calendars: [{ id: "cal-1", accountId: "acc-1", name: "Main" }] },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response(
+        JSON.stringify({ data: { events: [] } }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }) as typeof fetch;
+
+    await executeTool("calendarRead", '{"start":"2026-02-07","end":"2026-02-08"}');
+    await executeTool("calendarRead", '{"start":"2026-02-08","end":"2026-02-09"}');
+
+    expect(calendarListCalls).toBe(1);
+  });
+
+  it("eventDelete calls /v3/events/delete with id", async () => {
+    globalThis.fetch = (async (
+      input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      lastRequest = { url: String(input), init };
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+
+    const result = await executeTool("eventDelete", '{"id":"ev-123"}');
+    const parsed = JSON.parse(result);
+
+    expect(lastRequest!.url).toContain("/v3/events/delete");
+    expect(parsed.success).toBe(true);
+  });
+
+  it("executeTool handles API errors", async () => {
+    mockFetch({ error: "not found" }, 404);
+
+    try {
+      await executeTool("calendarList", "{}");
+      expect(true).toBe(false);
+    } catch (err) {
+      expect(err).toBeDefined();
+    }
+  });
+});
