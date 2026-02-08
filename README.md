@@ -37,9 +37,12 @@ morgen tasks close <id>               # Mark complete
 morgen tasks reopen <id>              # Reopen completed task
 morgen tasks delete <id>              # Delete task
 morgen tasks move <id> --after <id>   # Reorder task
+morgen tasks schedule <id> --start 2026-02-10T10:00:00  # Schedule on calendar
 ```
 
-Options: `--title`, `--description`, `--due`, `--duration`, `--priority` (1-9), `--tags`, `--list`
+Options: `--title`, `--description`, `--due`, `--duration`, `--priority` (1-9), `--tags`, `--list`, `--calendar-id`
+
+> **Note:** `tasks schedule` creates a standalone calendar event using the task's title and estimated duration. The Morgen API does not support linking events to tasks — that feature is only available in the desktop app.
 
 ### Calendar
 
@@ -86,7 +89,7 @@ morgen --help                         # Full help
 
 ```bash
 bun install
-bun test                              # Run tests (59 pass)
+bun test                              # Run tests (62 pass)
 bun run src/cli.ts <command>          # Run without building
 ```
 
