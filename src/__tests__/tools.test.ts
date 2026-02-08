@@ -12,13 +12,19 @@ describe("TOOL_DEFINITIONS", () => {
     }
   });
 
-  it("includes calendarRead and calendarList tools", () => {
+  it("includes calendar, event, and task tools", () => {
     const names = TOOL_DEFINITIONS.map((t) => t.function.name);
     expect(names).toContain("calendarRead");
     expect(names).toContain("calendarList");
     expect(names).toContain("eventCreate");
     expect(names).toContain("eventUpdate");
     expect(names).toContain("eventDelete");
+    expect(names).toContain("taskList");
+    expect(names).toContain("taskCreate");
+    expect(names).toContain("taskUpdate");
+    expect(names).toContain("taskClose");
+    expect(names).toContain("taskReopen");
+    expect(names).toContain("taskDelete");
   });
 
   it("calendarRead requires start and end parameters", () => {
@@ -202,5 +208,88 @@ describe("executeTool", () => {
     } catch (err) {
       expect(err).toBeDefined();
     }
+  });
+
+  it("taskList calls /v3/tasks/list and formats results", async () => {
+    mockFetch({
+      data: {
+        tasks: [
+          {
+            "@type": "Task",
+            id: "task-1",
+            accountId: "acc-1",
+            integrationId: "morgen",
+            taskListId: "tl-1",
+            title: "Buy groceries",
+            due: "2026-02-10T09:00:00",
+            progress: "needs-action",
+            priority: 3,
+          },
+        ],
+        labelDefs: [],
+        spaces: [],
+      },
+    });
+
+    const result = await executeTool("taskList", "{}");
+    const parsed = JSON.parse(result);
+
+    expect(lastRequest!.url).toContain("/v3/tasks/list");
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].title).toBe("Buy groceries");
+    expect(parsed[0].due).toBe("2026-02-10T09:00:00");
+    expect(parsed[0].priority).toBe(3);
+    expect(parsed[0].progress).toBe("needs-action");
+  });
+
+  it("taskCreate calls /v3/tasks/create with title", async () => {
+    mockFetch({ data: { id: "new-task-id" } });
+
+    const result = await executeTool(
+      "taskCreate",
+      '{"title":"Test task","description":"A test","priority":2}'
+    );
+    const parsed = JSON.parse(result);
+
+    expect(lastRequest!.url).toContain("/v3/tasks/create");
+    expect(parsed.success).toBe(true);
+    expect(parsed.id).toBe("new-task-id");
+
+    const body = JSON.parse(lastRequest!.init?.body as string);
+    expect(body.title).toBe("Test task");
+    expect(body.description).toBe("A test");
+    expect(body.priority).toBe(2);
+  });
+
+  it("taskClose calls /v3/tasks/close with id", async () => {
+    globalThis.fetch = (async (
+      input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      lastRequest = { url: String(input), init };
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+
+    const result = await executeTool("taskClose", '{"id":"task-123"}');
+    const parsed = JSON.parse(result);
+
+    expect(lastRequest!.url).toContain("/v3/tasks/close");
+    expect(parsed.success).toBe(true);
+  });
+
+  it("taskDelete calls /v3/tasks/delete with id", async () => {
+    globalThis.fetch = (async (
+      input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      lastRequest = { url: String(input), init };
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+
+    const result = await executeTool("taskDelete", '{"id":"task-456"}');
+    const parsed = JSON.parse(result);
+
+    expect(lastRequest!.url).toContain("/v3/tasks/delete");
+    expect(parsed.success).toBe(true);
   });
 });

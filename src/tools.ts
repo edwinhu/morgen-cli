@@ -9,9 +9,19 @@
  */
 
 import { morgenFetch } from "./morgen-api";
+import {
+  listTasks,
+  listAllTasks,
+  createTask,
+  updateTask,
+  closeTask,
+  reopenTask,
+  deleteTask,
+} from "./tasks";
 import type {
   MorgenCalendar,
   MorgenEvent,
+  MorgenTask,
   CalendarListApiResponse,
   EventListResponse,
 } from "./types";
@@ -151,6 +161,148 @@ export const TOOL_DEFINITIONS = [
           id: {
             type: "string",
             description: "The id of the event to delete.",
+          },
+        },
+        required: ["id"],
+        additionalProperties: false,
+      },
+    },
+  },
+  // Task tools
+  {
+    type: "function" as const,
+    function: {
+      name: "taskList",
+      description:
+        "List the user's tasks. Returns open tasks by default. Use 'allAccounts' to include tasks from connected integrations (Google Tasks, Microsoft To Do).",
+      parameters: {
+        type: "object",
+        properties: {
+          allAccounts: {
+            type: "boolean",
+            description:
+              "If true, fetch tasks from all connected accounts (Google Tasks, MS To Do). Default: false (Morgen-native tasks only).",
+          },
+          limit: {
+            type: "number",
+            description: "Maximum number of tasks to return.",
+          },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "taskCreate",
+      description:
+        "Create a new task. Only works for Morgen-native tasks (not integration accounts).",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "The title of the task." },
+          description: {
+            type: "string",
+            description: "Optional description or notes for the task.",
+          },
+          due: {
+            type: "string",
+            description:
+              "Due date/time as ISO datetime without timezone offset (e.g. '2025-01-15T09:00:00').",
+          },
+          estimatedDuration: {
+            type: "string",
+            description:
+              "Estimated duration as ISO 8601 duration (e.g. 'PT30M', 'PT1H').",
+          },
+          priority: {
+            type: "number",
+            description:
+              "Priority: 1 (highest) to 9 (lowest). 0 or omitted means undefined.",
+          },
+        },
+        required: ["title"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "taskUpdate",
+      description:
+        "Update an existing task's properties. Use 'taskList' to find the task id. Only works for Morgen-native tasks.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "The id of the task to update." },
+          title: { type: "string", description: "New title for the task." },
+          description: {
+            type: "string",
+            description: "New description/notes.",
+          },
+          due: {
+            type: "string",
+            description:
+              "New due date/time as ISO datetime without timezone offset.",
+          },
+          estimatedDuration: {
+            type: "string",
+            description: "New estimated duration as ISO 8601 duration.",
+          },
+          priority: { type: "number", description: "New priority (1-9, 0 = undefined)." },
+        },
+        required: ["id"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "taskClose",
+      description:
+        "Mark a task as completed/done. Works on both Morgen-native and integration tasks.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "The id of the task to close." },
+        },
+        required: ["id"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "taskReopen",
+      description:
+        "Reopen a previously completed task. Works on both Morgen-native and integration tasks.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "The id of the task to reopen." },
+        },
+        required: ["id"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "taskDelete",
+      description:
+        "Permanently delete a task. This cannot be undone. Only works for Morgen-native tasks.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: {
+            type: "string",
+            description: "The id of the task to delete.",
           },
         },
         required: ["id"],
@@ -344,6 +496,89 @@ async function executeEventDelete(args: { id: string }): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
+// Task execution
+// ---------------------------------------------------------------------------
+
+async function executeTaskList(args: {
+  allAccounts?: boolean;
+  limit?: number;
+}): Promise<string> {
+  const tasks = args.allAccounts
+    ? await listAllTasks({ limit: args.limit })
+    : await listTasks({ limit: args.limit });
+
+  const formatted = tasks.map((t: MorgenTask) => ({
+    id: t.id,
+    title: t.title,
+    ...(t.description ? { description: t.description } : {}),
+    ...(t.due ? { due: t.due } : {}),
+    ...(t.estimatedDuration ? { estimatedDuration: t.estimatedDuration } : {}),
+    ...(t.priority && t.priority > 0 ? { priority: t.priority } : {}),
+    progress: t.progress || "needs-action",
+    ...(t.tags?.length ? { tags: t.tags } : {}),
+  }));
+
+  return JSON.stringify(formatted);
+}
+
+async function executeTaskCreate(args: {
+  title: string;
+  description?: string;
+  due?: string;
+  estimatedDuration?: string;
+  priority?: number;
+}): Promise<string> {
+  const id = await createTask({
+    title: args.title,
+    ...(args.description ? { description: args.description } : {}),
+    ...(args.due ? { due: args.due } : {}),
+    ...(args.estimatedDuration
+      ? { estimatedDuration: args.estimatedDuration }
+      : {}),
+    ...(args.priority ? { priority: args.priority } : {}),
+  });
+
+  return JSON.stringify({ success: true, id });
+}
+
+async function executeTaskUpdate(args: {
+  id: string;
+  title?: string;
+  description?: string;
+  due?: string;
+  estimatedDuration?: string;
+  priority?: number;
+}): Promise<string> {
+  await updateTask({
+    id: args.id,
+    ...(args.title ? { title: args.title } : {}),
+    ...(args.description ? { description: args.description } : {}),
+    ...(args.due ? { due: args.due } : {}),
+    ...(args.estimatedDuration
+      ? { estimatedDuration: args.estimatedDuration }
+      : {}),
+    ...(args.priority !== undefined ? { priority: args.priority } : {}),
+  });
+
+  return JSON.stringify({ success: true });
+}
+
+async function executeTaskClose(args: { id: string }): Promise<string> {
+  await closeTask(args.id);
+  return JSON.stringify({ success: true });
+}
+
+async function executeTaskReopen(args: { id: string }): Promise<string> {
+  await reopenTask(args.id);
+  return JSON.stringify({ success: true });
+}
+
+async function executeTaskDelete(args: { id: string }): Promise<string> {
+  await deleteTask(args.id);
+  return JSON.stringify({ success: true });
+}
+
+// ---------------------------------------------------------------------------
 // Dispatcher
 // ---------------------------------------------------------------------------
 
@@ -368,6 +603,18 @@ export async function executeTool(
       return executeEventUpdate(args);
     case "eventDelete":
       return executeEventDelete(args);
+    case "taskList":
+      return executeTaskList(args);
+    case "taskCreate":
+      return executeTaskCreate(args);
+    case "taskUpdate":
+      return executeTaskUpdate(args);
+    case "taskClose":
+      return executeTaskClose(args);
+    case "taskReopen":
+      return executeTaskReopen(args);
+    case "taskDelete":
+      return executeTaskDelete(args);
     default:
       return JSON.stringify({
         error: `Tool "${name}" is not available in CLI mode.`,

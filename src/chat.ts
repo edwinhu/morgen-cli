@@ -37,9 +37,12 @@ function buildSystemPrompt(): string {
 
   return [
     "You are a helpful calendar and task management assistant.",
-    "You have access to tools that can read and modify the user's calendars and events.",
+    "You have access to tools that can read and modify the user's calendars, events, and tasks.",
     "When the user asks about their schedule, use the calendarRead tool to look up events.",
     "When creating events, always use calendarRead first to check for conflicts and find the right calendarId.",
+    "When the user asks about their tasks or to-dos, use the taskList tool.",
+    "You can create, update, close (complete), reopen, and delete tasks.",
+    "Note: create, update, and delete only work on Morgen-native tasks. Close and reopen work on integration tasks too.",
     "",
     `Current time: ${isoLocal}${offset}`,
     `User timezone: ${tz}`,
