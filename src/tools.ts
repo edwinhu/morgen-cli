@@ -10,6 +10,14 @@
 
 import { morgenFetch } from "./morgen-api";
 import {
+  listCalendars,
+  listEvents,
+  createEvent,
+  updateEvent,
+  deleteEvent,
+  resetCalendarCache as resetCalCache,
+} from "./calendars";
+import {
   listTasks,
   listAllTasks,
   createTask,
@@ -18,13 +26,7 @@ import {
   reopenTask,
   deleteTask,
 } from "./tasks";
-import type {
-  MorgenCalendar,
-  MorgenEvent,
-  MorgenTask,
-  CalendarListApiResponse,
-  EventListResponse,
-} from "./types";
+import type { MorgenTask } from "./types";
 
 // ---------------------------------------------------------------------------
 // Tool definitions (OpenAI function calling format)
@@ -54,6 +56,12 @@ export const TOOL_DEFINITIONS = [
             type: "boolean",
             description:
               "Whether to include the body of the event in the response. Use sparingly.",
+          },
+          calendarIds: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Optional list of calendar IDs to filter events. If provided, only events from these calendars are returned.",
           },
         },
         required: ["start", "end"],
@@ -312,76 +320,35 @@ export const TOOL_DEFINITIONS = [
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Calendar cache (avoids repeated /calendars/list calls within one session)
-// ---------------------------------------------------------------------------
-
-let cachedCalendars: MorgenCalendar[] | null = null;
-
-async function getCalendars(): Promise<MorgenCalendar[]> {
-  if (cachedCalendars) return cachedCalendars;
-  const resp = await morgenFetch<CalendarListApiResponse>("/calendars/list");
-  cachedCalendars = resp.data.calendars;
-  return cachedCalendars;
-}
-
 /** Reset calendar cache (for testing). */
 export function resetCalendarCache(): void {
-  cachedCalendars = null;
+  resetCalCache();
 }
 
 // ---------------------------------------------------------------------------
-// Tool execution
+// Calendar/Event tool execution
 // ---------------------------------------------------------------------------
 
 async function executeCalendarRead(args: {
   start: string;
   end: string;
   includeBody?: boolean;
+  calendarIds?: string[];
 }): Promise<string> {
-  const calendars = await getCalendars();
+  const events = await listEvents({
+    start: args.start,
+    end: args.end,
+    calendarIds: args.calendarIds,
+    includeBody: args.includeBody,
+  });
 
-  // Group calendars by accountId
-  const byAccount = new Map<string, string[]>();
-  for (const cal of calendars) {
-    const ids = byAccount.get(cal.accountId) || [];
-    ids.push(cal.id);
-    byAccount.set(cal.accountId, ids);
-  }
-
-  // Query events for each account in parallel
-  const allEvents: MorgenEvent[] = [];
-  const queries = [...byAccount.entries()].map(
-    async ([accountId, calendarIds]) => {
-      const resp = await morgenFetch<EventListResponse>("/events/list", {
-        params: {
-          accountId,
-          calendarIds: calendarIds.join(","),
-          start: args.start.includes("T")
-            ? args.start + (args.start.includes("Z") ? "" : "Z")
-            : args.start + "T00:00:00Z",
-          end: args.end.includes("T")
-            ? args.end + (args.end.includes("Z") ? "" : "Z")
-            : args.end + "T23:59:59Z",
-        },
-      });
-      allEvents.push(...resp.data.events);
-    }
-  );
-  await Promise.all(queries);
-
-  // Sort by start time
-  allEvents.sort((a, b) => a.start.localeCompare(b.start));
-
-  // Format response — include calendar name for context
-  const calMap = new Map(calendars.map((c) => [c.id, c.name]));
-  const formatted = allEvents.map((e) => ({
+  const formatted = events.map((e) => ({
     id: e.id,
     title: e.title,
     start: e.start,
     duration: e.duration,
     timeZone: e.timeZone,
-    calendar: calMap.get(e.calendarId) || e.calendarId,
+    calendar: e.calendarName || e.calendarId,
     ...(e.participants?.length ? { attendees: e.participants } : {}),
     ...(e.locations?.length ? { location: e.locations[0]?.name } : {}),
     ...(args.includeBody && e.description
@@ -394,7 +361,7 @@ async function executeCalendarRead(args: {
 }
 
 async function executeCalendarList(): Promise<string> {
-  const calendars = await getCalendars();
+  const calendars = await listCalendars();
   const formatted = calendars.map((c) => ({
     id: c.id,
     name: c.name,
@@ -414,11 +381,10 @@ async function executeEventCreate(args: {
   isAllDay?: boolean;
   attendees?: string;
 }): Promise<string> {
-  // Find the accountId for the given calendarId
-  const calendars = await getCalendars();
+  const calendars = await listCalendars();
   const cal = args.calendarId
     ? calendars.find((c) => c.id === args.calendarId)
-    : calendars.find((c) => c.myRights?.mayWrite); // default to first writable
+    : calendars.find((c) => c.myRights?.mayWrite);
 
   if (!cal) {
     return JSON.stringify({ error: "Calendar not found or not writable" });
@@ -445,17 +411,13 @@ async function executeEventCreate(args: {
   };
 
   if (args.attendees) {
-    body.participants = args.attendees.split(",").map((email) => ({
+    body.participants = args.attendees.split(",").map((email: string) => ({
       email: email.trim(),
     }));
   }
 
-  const resp = await morgenFetch<{ data: { id: string } }>("/events/create", {
-    method: "POST",
-    body,
-  });
-
-  return JSON.stringify({ success: true, id: resp.data.id });
+  const id = await createEvent(body as any);
+  return JSON.stringify({ success: true, id });
 }
 
 async function executeEventUpdate(args: {
@@ -483,15 +445,12 @@ async function executeEventUpdate(args: {
   }
   if (args.isAllDay !== undefined) body.showWithoutTime = args.isAllDay;
 
-  await morgenFetch<void>("/events/update", { method: "POST", body });
+  await updateEvent(body);
   return JSON.stringify({ success: true });
 }
 
 async function executeEventDelete(args: { id: string }): Promise<string> {
-  await morgenFetch<void>("/events/delete", {
-    method: "POST",
-    body: { id: args.id },
-  });
+  await deleteEvent(args.id);
   return JSON.stringify({ success: true });
 }
 

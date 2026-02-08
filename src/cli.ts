@@ -15,10 +15,18 @@ import {
   deleteTask,
   moveTask,
 } from "./tasks";
+import {
+  listCalendars,
+  listEvents,
+  createEvent,
+  updateEvent,
+  deleteEvent,
+  findFreeSlots,
+} from "./calendars";
 import { sendChat } from "./chat";
 import { MorgenApiError } from "./morgen-api";
 import { authenticate } from "./morgen-cdp";
-import type { MorgenTask, CreateTaskInput, UpdateTaskInput } from "./types";
+import type { MorgenTask, MorgenEvent, MorgenCalendar, CreateTaskInput, UpdateTaskInput } from "./types";
 import pkg from "../package.json";
 
 const VERSION = pkg.version;
@@ -72,6 +80,19 @@ interface CliOptions {
   parent?: string;
   account?: string;
   all?: boolean;
+  // Calendar/event options
+  calendarId?: string;
+  start?: string;
+  end?: string;
+  timeZone?: string;
+  location?: string;
+  attendees?: string;
+  allDay?: boolean;
+  minMinutes?: number;
+  // Chat calendar filtering
+  calendars?: string[];
+  excludeCalendars?: string[];
+  onlyPrimary?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +129,8 @@ function parseArgs(args: string[]): CliOptions {
       if (key === "help") { opts.help = true; i++; continue; }
       if (key === "version") { opts.version = true; i++; continue; }
       if (key === "all") { opts.all = true; i++; continue; }
+      if (key === "all-day") { opts.allDay = true; i++; continue; }
+      if (key === "only-primary") { opts.onlyPrimary = true; i++; continue; }
 
       const next = args[i + 1];
       if (next !== undefined) {
@@ -152,6 +175,17 @@ function setNamedArg(opts: CliOptions, key: string, value: string): void {
     case "after": opts.after = value; break;
     case "parent": opts.parent = value; break;
     case "account": opts.account = value; break;
+    // Calendar/event options
+    case "calendar": case "calendar-id": opts.calendarId = value; break;
+    case "start": opts.start = value; break;
+    case "end": opts.end = value; break;
+    case "timezone": case "tz": opts.timeZone = value; break;
+    case "location": opts.location = value; break;
+    case "attendees": opts.attendees = value; break;
+    case "min-minutes": opts.minMinutes = parseInt(value, 10); break;
+    // Chat calendar filtering
+    case "calendars": opts.calendars = value.split(",").map((s) => s.trim()); break;
+    case "exclude-calendars": opts.excludeCalendars = value.split(",").map((s) => s.trim()); break;
   }
 }
 
@@ -214,6 +248,12 @@ ${colors.bold}COMMANDS${colors.reset}
   ${colors.cyan}tasks reopen${colors.reset} <id>   Reopen a completed task (all providers)
   ${colors.cyan}tasks delete${colors.reset} <id>   Delete a task (Morgen-native)
   ${colors.cyan}tasks move${colors.reset} <id>    Move/reorder a task (--after, --parent)
+  ${colors.cyan}calendar${colors.reset}           List all calendars
+  ${colors.cyan}calendar events${colors.reset}    List events (--start, --end)
+  ${colors.cyan}calendar create${colors.reset}    Create an event (--title, --start, --end)
+  ${colors.cyan}calendar update${colors.reset} <id> Update an event
+  ${colors.cyan}calendar delete${colors.reset} <id> Delete an event
+  ${colors.cyan}calendar free${colors.reset}      Find free time slots (--start, --end)
   ${colors.cyan}chat${colors.reset} <prompt>       Chat with Morgen AI assistant
   ${colors.cyan}help${colors.reset}               Show this help message
 
@@ -231,6 +271,17 @@ ${colors.bold}OPTIONS${colors.reset}
   --parent <id>       Set parent task ID (for move)
   --account <id>      Filter tasks by integration account ID
   --all               List tasks from all connected accounts
+  --calendar-id <id>  Calendar ID (for event create)
+  --start <datetime>  Start time (ISO format or YYYY-MM-DD)
+  --end <datetime>    End time (ISO format or YYYY-MM-DD)
+  --timezone <tz>     Timezone (e.g. America/New_York)
+  --location <text>   Event location
+  --attendees <emails> Comma-separated attendee emails
+  --all-day           Create an all-day event
+  --min-minutes <n>   Minimum free slot duration (default: 30)
+  --calendars <names> Filter: only include these calendars (for chat/free)
+  --exclude-calendars <names> Filter: exclude these calendars
+  --only-primary      Filter: only primary calendar (for chat)
   --json              Output as JSON
   --help              Show this help
   --version           Show version
@@ -255,8 +306,19 @@ ${colors.bold}EXAMPLES${colors.reset}
   ${colors.dim}# Create a Morgen-native task${colors.reset}
   morgen tasks create --title "Review PR" --due 2026-02-10
 
+  ${colors.dim}# List calendars and events${colors.reset}
+  morgen calendar
+  morgen calendar events --start 2026-02-10 --end 2026-02-11
+
+  ${colors.dim}# Create a calendar event${colors.reset}
+  morgen calendar create --title "Meeting" --start 2026-02-10T14:00:00 --end 2026-02-10T15:00:00
+
+  ${colors.dim}# Find free time slots${colors.reset}
+  morgen calendar free --start 2026-02-10T09:00:00 --end 2026-02-10T17:00:00
+
   ${colors.dim}# Chat with Morgen AI${colors.reset}
   morgen chat "What is on my calendar today?"
+  morgen chat "find me 2 hours free" --calendars Work,Personal
   morgen chat summarize my week --json
 
 ${colors.bold}ENVIRONMENT${colors.reset}
@@ -472,6 +534,232 @@ async function handleTasks(opts: CliOptions) {
 }
 
 // ---------------------------------------------------------------------------
+// Calendar/Event formatting
+// ---------------------------------------------------------------------------
+function formatCalendar(cal: MorgenCalendar): string {
+  const write = cal.myRights?.mayWrite
+    ? `${colors.green}rw${colors.reset}`
+    : `${colors.dim}ro${colors.reset}`;
+  return `  ${write} ${cal.name}  ${colors.dim}${cal.id}${colors.reset}`;
+}
+
+function formatEvent(event: MorgenEvent & { calendarName?: string }): string {
+  const time = event.showWithoutTime
+    ? `${colors.cyan}all-day${colors.reset}`
+    : `${colors.cyan}${event.start.split("T")[1]?.slice(0, 5) || event.start}${colors.reset}`;
+  const dur = event.duration ? `  ${colors.dim}${event.duration}${colors.reset}` : "";
+  const cal = event.calendarName
+    ? `  ${colors.dim}[${event.calendarName}]${colors.reset}`
+    : "";
+  return `${time} ${event.title}${dur}${cal}  ${colors.dim}${event.id}${colors.reset}`;
+}
+
+// ---------------------------------------------------------------------------
+// Calendar handler
+// ---------------------------------------------------------------------------
+async function handleCalendar(opts: CliOptions) {
+  const sub = opts.subCommand;
+
+  // Default: list calendars
+  if (!sub || sub === "list") {
+    const calendars = await listCalendars();
+    if (opts.json) {
+      console.log(JSON.stringify(calendars, null, 2));
+    } else {
+      if (calendars.length === 0) {
+        console.log(`${colors.dim}No calendars found${colors.reset}`);
+      } else {
+        console.log(`${colors.bold}Calendars${colors.reset}\n`);
+        for (const cal of calendars) {
+          console.log(formatCalendar(cal));
+        }
+      }
+    }
+    return;
+  }
+
+  if (sub === "events") {
+    if (!opts.start) {
+      // Default to today
+      const now = new Date();
+      opts.start = now.toISOString().split("T")[0];
+    }
+    if (!opts.end) {
+      // Default to start + 1 day
+      const startDate = new Date(opts.start);
+      startDate.setDate(startDate.getDate() + 1);
+      opts.end = startDate.toISOString().split("T")[0];
+    }
+
+    const events = await listEvents({
+      start: opts.start,
+      end: opts.end,
+      calendarIds: opts.calendars,
+    });
+
+    if (opts.json) {
+      console.log(JSON.stringify(events, null, 2));
+    } else {
+      if (events.length === 0) {
+        console.log(`${colors.dim}No events found${colors.reset}`);
+      } else {
+        for (const event of events) {
+          console.log(formatEvent(event));
+        }
+      }
+    }
+    return;
+  }
+
+  if (sub === "create") {
+    if (!opts.title) {
+      error("--title is required for event creation");
+      process.exit(1);
+    }
+    if (!opts.start) {
+      error("--start is required for event creation");
+      process.exit(1);
+    }
+    if (!opts.end && !opts.duration) {
+      error("--end or --duration is required for event creation");
+      process.exit(1);
+    }
+
+    const calendars = await listCalendars();
+    const cal = opts.calendarId
+      ? calendars.find((c) => c.id === opts.calendarId)
+      : calendars.find((c) => c.myRights?.mayWrite);
+
+    if (!cal) {
+      error("No writable calendar found. Use --calendar-id to specify one.");
+      process.exit(1);
+    }
+
+    const tz = opts.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    // Compute duration from start/end or use provided duration
+    let duration = opts.duration || "PT1H";
+    if (opts.end && !opts.duration) {
+      const durationMs = new Date(opts.end).getTime() - new Date(opts.start).getTime();
+      const totalMins = Math.round(durationMs / 60000);
+      const hours = Math.floor(totalMins / 60);
+      const mins = totalMins % 60;
+      duration = hours > 0
+        ? `PT${hours}H${mins > 0 ? mins + "M" : ""}`
+        : `PT${mins}M`;
+    }
+
+    const id = await createEvent({
+      accountId: cal.accountId,
+      calendarId: cal.id,
+      title: opts.title,
+      start: opts.start,
+      duration,
+      timeZone: tz,
+      showWithoutTime: opts.allDay ?? false,
+      ...(opts.description ? { description: opts.description } : {}),
+    });
+
+    if (opts.json) {
+      console.log(JSON.stringify({ id }));
+    } else {
+      success(`Event created: ${id}`);
+    }
+    return;
+  }
+
+  if (sub === "update") {
+    if (!opts.positional) {
+      error("Usage: morgen calendar update <event-id> [options]");
+      process.exit(1);
+    }
+
+    const body: Record<string, unknown> = { id: opts.positional };
+    if (opts.title) body.title = opts.title;
+    if (opts.description) body.description = opts.description;
+    if (opts.location) body.locations = [{ name: opts.location }];
+    if (opts.start) body.start = opts.start;
+    if (opts.start && opts.end) {
+      const durationMs = new Date(opts.end).getTime() - new Date(opts.start).getTime();
+      const totalMins = Math.round(durationMs / 60000);
+      const hours = Math.floor(totalMins / 60);
+      const mins = totalMins % 60;
+      body.duration = hours > 0
+        ? `PT${hours}H${mins > 0 ? mins + "M" : ""}`
+        : `PT${mins}M`;
+    }
+    if (opts.allDay !== undefined) body.showWithoutTime = opts.allDay;
+
+    await updateEvent(body);
+    if (opts.json) {
+      console.log(JSON.stringify({ success: true }));
+    } else {
+      success("Event updated");
+    }
+    return;
+  }
+
+  if (sub === "delete") {
+    if (!opts.positional) {
+      error("Usage: morgen calendar delete <event-id>");
+      process.exit(1);
+    }
+    await deleteEvent(opts.positional);
+    if (opts.json) {
+      console.log(JSON.stringify({ success: true }));
+    } else {
+      success("Event deleted");
+    }
+    return;
+  }
+
+  if (sub === "free") {
+    if (!opts.start) {
+      const now = new Date();
+      opts.start = now.toISOString();
+    }
+    if (!opts.end) {
+      const startDate = new Date(opts.start);
+      startDate.setDate(startDate.getDate() + 1);
+      opts.end = startDate.toISOString();
+    }
+
+    const slots = await findFreeSlots({
+      start: opts.start,
+      end: opts.end,
+      calendarIds: opts.calendars,
+      minMinutes: opts.minMinutes,
+    });
+
+    if (opts.json) {
+      console.log(JSON.stringify(slots, null, 2));
+    } else {
+      if (slots.length === 0) {
+        console.log(`${colors.dim}No free slots found${colors.reset}`);
+      } else {
+        console.log(`${colors.bold}Free Slots${colors.reset}\n`);
+        for (const slot of slots) {
+          const start = slot.start.includes("T")
+            ? slot.start.split("T")[1]?.slice(0, 5)
+            : slot.start;
+          const end = slot.end.includes("T")
+            ? slot.end.split("T")[1]?.slice(0, 5)
+            : slot.end;
+          console.log(
+            `  ${colors.green}${start}${colors.reset} - ${colors.green}${end}${colors.reset}  ${colors.dim}(${slot.duration})${colors.reset}`
+          );
+        }
+      }
+    }
+    return;
+  }
+
+  error(`Unknown calendar subcommand: ${sub}`);
+  info("Run 'morgen help' for usage");
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
 // Chat handler
 // ---------------------------------------------------------------------------
 async function handleChat(opts: CliOptions) {
@@ -483,20 +771,54 @@ async function handleChat(opts: CliOptions) {
     process.exit(1);
   }
 
+  // Resolve calendar filters to IDs
+  let calendarFilter: import("./chat").CalendarFilter | undefined;
+  if (opts.calendars || opts.excludeCalendars || opts.onlyPrimary) {
+    const allCals = await listCalendars();
+    let filtered = allCals;
+
+    if (opts.onlyPrimary) {
+      // Use only the first writable calendar as "primary"
+      const primary = allCals.find((c) => c.myRights?.mayWrite);
+      filtered = primary ? [primary] : [];
+    } else if (opts.calendars) {
+      // Include only calendars whose name matches (case-insensitive partial match)
+      filtered = allCals.filter((c) =>
+        opts.calendars!.some((name) =>
+          c.name.toLowerCase().includes(name.toLowerCase())
+        )
+      );
+    }
+
+    if (opts.excludeCalendars) {
+      filtered = filtered.filter((c) =>
+        !opts.excludeCalendars!.some((name) =>
+          c.name.toLowerCase().includes(name.toLowerCase())
+        )
+      );
+    }
+
+    if (filtered.length === 0) {
+      error("No calendars matched the filter. Check --calendars / --exclude-calendars names.");
+      process.exit(1);
+    }
+
+    calendarFilter = { calendarIds: filtered.map((c) => c.id) };
+  }
+
   if (opts.json) {
-    const result = await sendChat(prompt);
+    const result = await sendChat(prompt, { calendarFilter });
     console.log(JSON.stringify(result, null, 2));
   } else {
     const result = await sendChat(prompt, {
       onToken: (text: string) => process.stdout.write(text),
       onToolCall: (name: string, args: string) => {
-        // Show tool execution on stderr so it doesn't mix with streamed output
         process.stderr.write(
           `${colors.dim}[tool] ${name}(${args.length > 80 ? args.slice(0, 80) + "..." : args})${colors.reset}\n`
         );
       },
+      calendarFilter,
     });
-    // Ensure final newline after streamed output
     process.stdout.write("\n");
   }
 }
@@ -524,6 +846,7 @@ async function main() {
     if (opts.command === "auth") { await handleAuth(opts); return; }
     if (opts.command === "accounts") { await handleAccounts(opts); return; }
     if (opts.command === "tasks") { await handleTasks(opts); return; }
+    if (opts.command === "calendar") { await handleCalendar(opts); return; }
 
     if (opts.command === "chat") {
       await handleChat(opts);

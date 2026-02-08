@@ -16,6 +16,15 @@ export {
   deleteTask,
   moveTask,
 } from "./tasks.ts";
+export {
+  listCalendars,
+  listEvents,
+  createEvent,
+  updateEvent,
+  deleteEvent,
+  findFreeSlots,
+  resetCalendarCache,
+} from "./calendars.ts";
 export { sendChat, parseSSEStream } from "./chat.ts";
 export { TOOL_DEFINITIONS, executeTool } from "./tools.ts";
 export type { ListTasksOptions } from "./tasks.ts";

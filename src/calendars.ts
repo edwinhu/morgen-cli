@@ -1,0 +1,226 @@
+/**
+ * Calendars & Events Module
+ *
+ * Calendar and event operations via the Morgen API (api.morgen.so/v3).
+ */
+
+import { morgenFetch } from "./morgen-api";
+import type {
+  MorgenCalendar,
+  MorgenEvent,
+  CalendarListApiResponse,
+  EventListResponse,
+  CreateEventInput,
+} from "./types";
+
+// ---------------------------------------------------------------------------
+// Calendar cache (avoids repeated /calendars/list calls within one session)
+// ---------------------------------------------------------------------------
+
+let cachedCalendars: MorgenCalendar[] | null = null;
+
+export async function listCalendars(): Promise<MorgenCalendar[]> {
+  if (cachedCalendars) return cachedCalendars;
+  const resp = await morgenFetch<CalendarListApiResponse>("/calendars/list");
+  cachedCalendars = resp.data.calendars;
+  return cachedCalendars;
+}
+
+/** Reset calendar cache (for testing). */
+export function resetCalendarCache(): void {
+  cachedCalendars = null;
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+export interface ListEventsOptions {
+  start: string;
+  end: string;
+  calendarIds?: string[];
+  includeBody?: boolean;
+}
+
+export async function listEvents(
+  options: ListEventsOptions
+): Promise<(MorgenEvent & { calendarName?: string })[]> {
+  const calendars = await listCalendars();
+
+  // Filter calendars if specific IDs provided
+  const filteredCals = options.calendarIds
+    ? calendars.filter((c) => options.calendarIds!.includes(c.id))
+    : calendars;
+
+  // Group calendars by accountId
+  const byAccount = new Map<string, string[]>();
+  for (const cal of filteredCals) {
+    const ids = byAccount.get(cal.accountId) || [];
+    ids.push(cal.id);
+    byAccount.set(cal.accountId, ids);
+  }
+
+  // Query events for each account in parallel
+  const allEvents: MorgenEvent[] = [];
+  const queries = [...byAccount.entries()].map(
+    async ([accountId, calendarIds]) => {
+      const startParam = options.start.includes("T")
+        ? options.start + (options.start.includes("Z") ? "" : "Z")
+        : options.start + "T00:00:00Z";
+      const endParam = options.end.includes("T")
+        ? options.end + (options.end.includes("Z") ? "" : "Z")
+        : options.end + "T23:59:59Z";
+
+      const resp = await morgenFetch<EventListResponse>("/events/list", {
+        params: {
+          accountId,
+          calendarIds: calendarIds.join(","),
+          start: startParam,
+          end: endParam,
+        },
+      });
+      allEvents.push(...resp.data.events);
+    }
+  );
+  await Promise.all(queries);
+
+  // Sort by start time
+  allEvents.sort((a, b) => a.start.localeCompare(b.start));
+
+  // Add calendar name for context
+  const calMap = new Map(calendars.map((c) => [c.id, c.name]));
+  return allEvents.map((e) => ({
+    ...e,
+    calendarName: calMap.get(e.calendarId),
+  }));
+}
+
+export async function createEvent(input: CreateEventInput): Promise<string> {
+  const resp = await morgenFetch<{ data: { id: string } }>("/events/create", {
+    method: "POST",
+    body: input,
+  });
+  return resp.data.id;
+}
+
+export async function updateEvent(
+  input: Record<string, unknown>
+): Promise<void> {
+  await morgenFetch<void>("/events/update", { method: "POST", body: input });
+}
+
+export async function deleteEvent(id: string): Promise<void> {
+  await morgenFetch<void>("/events/delete", {
+    method: "POST",
+    body: { id },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Free/Busy
+// ---------------------------------------------------------------------------
+
+export interface FreeSlot {
+  start: string;
+  end: string;
+  duration: string;
+}
+
+/**
+ * Find free time slots within a given range by subtracting events.
+ * Returns slots of at least `minMinutes` duration.
+ */
+export async function findFreeSlots(options: {
+  start: string;
+  end: string;
+  calendarIds?: string[];
+  minMinutes?: number;
+}): Promise<FreeSlot[]> {
+  const events = await listEvents({
+    start: options.start,
+    end: options.end,
+    calendarIds: options.calendarIds,
+  });
+
+  // Filter out all-day events, only consider timed events for busy slots
+  const timedEvents = events.filter((e) => !e.showWithoutTime);
+
+  // Convert events to busy intervals [start, end] in ms
+  const busyIntervals: [number, number][] = timedEvents.map((e) => {
+    const startMs = new Date(e.start).getTime();
+    const durationMs = parseDurationToMs(e.duration);
+    return [startMs, startMs + durationMs];
+  });
+
+  // Sort and merge overlapping intervals
+  busyIntervals.sort((a, b) => a[0] - b[0]);
+  const merged: [number, number][] = [];
+  for (const interval of busyIntervals) {
+    if (merged.length > 0 && interval[0] <= merged[merged.length - 1][1]) {
+      merged[merged.length - 1][1] = Math.max(
+        merged[merged.length - 1][1],
+        interval[1]
+      );
+    } else {
+      merged.push([...interval]);
+    }
+  }
+
+  // Find free slots between busy intervals
+  const rangeStart = new Date(options.start).getTime();
+  const rangeEnd = new Date(options.end).getTime();
+  const minMs = (options.minMinutes ?? 30) * 60 * 1000;
+
+  const freeSlots: FreeSlot[] = [];
+  let cursor = rangeStart;
+
+  for (const [busyStart, busyEnd] of merged) {
+    if (busyStart > cursor) {
+      const gap = busyStart - cursor;
+      if (gap >= minMs) {
+        freeSlots.push({
+          start: new Date(cursor).toISOString(),
+          end: new Date(busyStart).toISOString(),
+          duration: formatDuration(gap),
+        });
+      }
+    }
+    cursor = Math.max(cursor, busyEnd);
+  }
+
+  // Check gap after last event
+  if (rangeEnd > cursor) {
+    const gap = rangeEnd - cursor;
+    if (gap >= minMs) {
+      freeSlots.push({
+        start: new Date(cursor).toISOString(),
+        end: new Date(rangeEnd).toISOString(),
+        duration: formatDuration(gap),
+      });
+    }
+  }
+
+  return freeSlots;
+}
+
+// ---------------------------------------------------------------------------
+// Duration helpers
+// ---------------------------------------------------------------------------
+
+function parseDurationToMs(iso: string): number {
+  const match = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return 0;
+  const hours = parseInt(match[1] || "0");
+  const mins = parseInt(match[2] || "0");
+  const secs = parseInt(match[3] || "0");
+  return (hours * 3600 + mins * 60 + secs) * 1000;
+}
+
+function formatDuration(ms: number): string {
+  const totalMins = Math.round(ms / 60000);
+  const hours = Math.floor(totalMins / 60);
+  const mins = totalMins % 60;
+  if (hours > 0 && mins > 0) return `${hours}h${mins}m`;
+  if (hours > 0) return `${hours}h`;
+  return `${mins}m`;
+}

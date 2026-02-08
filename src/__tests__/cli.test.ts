@@ -63,7 +63,7 @@ describe("morgen CLI", () => {
     expect(stderr).toContain("authentication");
   });
 
-  it("help shows auth and accounts commands", async () => {
+  it("help shows auth, accounts, and calendar commands", async () => {
     const proc = Bun.spawn(["bun", "run", CLI, "--help"], {
       stdout: "pipe",
     });
@@ -71,8 +71,13 @@ describe("morgen CLI", () => {
     await proc.exited;
     expect(stdout).toContain("auth");
     expect(stdout).toContain("accounts");
-    expect(stdout).toContain("--all");
-    expect(stdout).toContain("--account");
+    expect(stdout).toContain("calendar");
+    expect(stdout).toContain("calendar events");
+    expect(stdout).toContain("calendar create");
+    expect(stdout).toContain("calendar free");
+    expect(stdout).toContain("--calendars");
+    expect(stdout).toContain("--exclude-calendars");
+    expect(stdout).toContain("--only-primary");
     expect(stdout).toContain("MORGEN_API_KEY");
   });
 

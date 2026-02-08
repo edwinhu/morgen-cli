@@ -25,17 +25,21 @@ const CHAT_ENDPOINT =
 const MODEL = "anthropic/claude-haiku-4.5";
 const MAX_TOOL_ROUNDS = 10;
 
+export interface CalendarFilter {
+  calendarIds?: string[];
+}
+
 /**
  * Build the system prompt with current time context.
  */
-function buildSystemPrompt(): string {
+function buildSystemPrompt(filter?: CalendarFilter): string {
   const now = new Date();
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const isoLocal = now.toLocaleString("sv-SE", { timeZone: tz }).replace(" ", "T");
   const offset = now.toLocaleString("en-US", { timeZone: tz, timeZoneName: "longOffset" })
     .match(/GMT[+-]\d{1,2}(:\d{2})?/)?.[0] ?? "";
 
-  return [
+  const lines = [
     "You are a helpful calendar and task management assistant.",
     "You have access to tools that can read and modify the user's calendars, events, and tasks.",
     "When the user asks about their schedule, use the calendarRead tool to look up events.",
@@ -43,10 +47,19 @@ function buildSystemPrompt(): string {
     "When the user asks about their tasks or to-dos, use the taskList tool.",
     "You can create, update, close (complete), reopen, and delete tasks.",
     "Note: create, update, and delete only work on Morgen-native tasks. Close and reopen work on integration tasks too.",
-    "",
-    `Current time: ${isoLocal}${offset}`,
-    `User timezone: ${tz}`,
-  ].join("\n");
+  ];
+
+  if (filter?.calendarIds?.length) {
+    lines.push(
+      "",
+      `IMPORTANT: The user has filtered calendars. When using calendarRead, ALWAYS include this calendarIds parameter: ${JSON.stringify(filter.calendarIds)}`,
+      "Only query events from these specific calendars."
+    );
+  }
+
+  lines.push("", `Current time: ${isoLocal}${offset}`, `User timezone: ${tz}`);
+
+  return lines.join("\n");
 }
 
 /**
@@ -251,6 +264,7 @@ export async function sendChat(
   options?: {
     onToken?: (text: string) => void;
     onToolCall?: (name: string, args: string) => void;
+    calendarFilter?: CalendarFilter;
   }
 ): Promise<ChatResponse> {
   const session = await loadSession();
@@ -261,7 +275,7 @@ export async function sendChat(
   }
 
   const messages: ChatMessage[] = [
-    { role: "system", content: buildSystemPrompt() },
+    { role: "system", content: buildSystemPrompt(options?.calendarFilter) },
     { role: "user", content: prompt },
   ];
 
