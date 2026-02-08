@@ -32,6 +32,35 @@ export function resetCalendarCache(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Event ID decoding
+// ---------------------------------------------------------------------------
+
+/**
+ * Decode a Morgen event ID to extract calendarId and accountId.
+ * Event IDs are base64-encoded JSON arrays: [calendarId, eventId, accountId]
+ */
+export function decodeEventId(id: string): {
+  calendarId: string;
+  eventId: string;
+  accountId: string;
+} | null {
+  try {
+    const decoded = atob(id);
+    const parsed = JSON.parse(decoded);
+    if (Array.isArray(parsed) && parsed.length >= 3) {
+      return {
+        calendarId: parsed[0],
+        eventId: parsed[1],
+        accountId: parsed[2],
+      };
+    }
+  } catch {
+    // Not a base64-encoded JSON array
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
 
@@ -106,13 +135,29 @@ export async function createEvent(input: CreateEventInput): Promise<string> {
 export async function updateEvent(
   input: Record<string, unknown>
 ): Promise<void> {
-  await morgenFetch<void>("/events/update", { method: "POST", body: input });
+  const body = { ...input };
+  // Decode accountId and calendarId from event ID if not already provided
+  if (body.id && !body.accountId) {
+    const decoded = decodeEventId(body.id as string);
+    if (decoded) {
+      body.accountId = decoded.accountId;
+      body.calendarId = decoded.calendarId;
+    }
+  }
+  await morgenFetch<void>("/events/update", { method: "POST", body });
 }
 
 export async function deleteEvent(id: string): Promise<void> {
+  const body: Record<string, string> = { id };
+  // Decode accountId and calendarId from event ID
+  const decoded = decodeEventId(id);
+  if (decoded) {
+    body.accountId = decoded.accountId;
+    body.calendarId = decoded.calendarId;
+  }
   await morgenFetch<void>("/events/delete", {
     method: "POST",
-    body: { id },
+    body,
   });
 }
 
