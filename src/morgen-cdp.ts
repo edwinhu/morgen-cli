@@ -20,6 +20,13 @@ const API_BASE = "https://api.morgen.so";
 const DEFAULT_PORT = 9223;
 const SESSION_FILE = resolve(homedir(), ".config", "morgen-cli", "session.json");
 
+/**
+ * Get CDP host from environment or default to localhost
+ */
+function getCDPHost(): string {
+  return process.env.CDP_HOST || process.env.HOST_IP || "localhost";
+}
+
 export interface SessionInfo {
   token: string; // AI gateway token (for ai.cf.morgen.so)
   apiToken: string; // Regular API token (for api.morgen.so)
@@ -31,7 +38,8 @@ export interface SessionInfo {
 /** Check if Morgen is running with CDP enabled. */
 export async function isMorgenRunning(port = DEFAULT_PORT): Promise<boolean> {
   try {
-    const targets = await CDP.List({ port });
+    const host = getCDPHost();
+    const targets = await CDP.List({ host, port });
     return targets.some((t: any) => t.title === "Morgen Calendar" || t.url?.includes("morgen"));
   } catch {
     return false;
@@ -43,11 +51,12 @@ async function extractCredentials(port = DEFAULT_PORT): Promise<{
   refreshToken: string;
   deviceId: string;
 }> {
-  const targets = await CDP.List({ port });
+  const host = getCDPHost();
+  const targets = await CDP.List({ host, port });
   const pageTarget = targets.find((t: any) => t.type === "page");
   if (!pageTarget) throw new Error("Morgen page target not found via CDP");
 
-  const client = await CDP({ port, target: pageTarget });
+  const client = await CDP({ host, port, target: pageTarget });
   try {
     const { Runtime } = client;
 
@@ -167,11 +176,12 @@ export async function authenticate(port = DEFAULT_PORT): Promise<{
   await saveSession(session);
 
   // Get email from Morgen app
-  const targets = await CDP.List({ port });
+  const host = getCDPHost();
+  const targets = await CDP.List({ host, port });
   const pageTarget = targets.find((t: any) => t.type === "page");
   let email = "unknown";
   if (pageTarget) {
-    const client = await CDP({ port, target: pageTarget });
+    const client = await CDP({ host, port, target: pageTarget });
     try {
       const { Runtime } = client;
       const result = await Runtime.evaluate({

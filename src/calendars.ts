@@ -188,7 +188,9 @@ export async function findFreeSlots(options: {
   });
 
   // Filter out all-day events, only consider timed events for busy slots
-  const timedEvents = events.filter((e) => !e.showWithoutTime);
+  const timedEvents = events.filter(
+    (e) => !e.showWithoutTime && e.freeBusyStatus !== "free"
+  );
 
   // Convert events to busy intervals [start, end] in ms
   const busyIntervals: [number, number][] = timedEvents.map((e) => {

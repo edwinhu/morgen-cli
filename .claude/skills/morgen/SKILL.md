@@ -28,6 +28,17 @@ Two auth modes:
 
 Session auth enables close/reopen on integration tasks (Google Tasks, MS To Do) and AI chat.
 
+### Container / Remote CDP
+
+When running inside a Docker container, set `CDP_HOST` to reach the host:
+
+```bash
+export CDP_HOST=host.docker.internal   # Docker container → host (port 9223)
+morgen auth                            # Extract session token via remote CDP
+```
+
+Container must be started with `--add-host=host.docker.internal:host-gateway`.
+
 ## Commands
 
 ### Tasks

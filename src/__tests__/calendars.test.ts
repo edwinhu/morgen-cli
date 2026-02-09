@@ -222,6 +222,82 @@ describe("calendars module", () => {
     expect(slots).toHaveLength(2);
   });
 
+  it("findFreeSlots skips events with freeBusyStatus 'free'", async () => {
+    mockFetchWithCalendarsAndEvents([
+      {
+        "@type": "Event",
+        id: "ev-busy",
+        calendarId: "cal-work",
+        title: "Real Meeting",
+        start: "2026-02-10T09:00:00Z",
+        duration: "PT1H",
+        timeZone: "America/New_York",
+        showWithoutTime: false,
+        freeBusyStatus: "busy",
+      },
+      {
+        "@type": "Event",
+        id: "ev-free",
+        calendarId: "cal-work",
+        title: "Lunch (free)",
+        start: "2026-02-10T12:00:00Z",
+        duration: "PT1H",
+        timeZone: "America/New_York",
+        showWithoutTime: false,
+        freeBusyStatus: "free",
+      },
+      {
+        "@type": "Event",
+        id: "ev-tentative",
+        calendarId: "cal-work",
+        title: "Maybe Meeting",
+        start: "2026-02-10T14:00:00Z",
+        duration: "PT1H",
+        timeZone: "America/New_York",
+        showWithoutTime: false,
+        freeBusyStatus: "tentative",
+      },
+    ]);
+
+    const slots = await findFreeSlots({
+      start: "2026-02-10T08:00:00Z",
+      end: "2026-02-10T16:00:00Z",
+      minMinutes: 30,
+    });
+
+    // busy event at 9-10 blocks, free event at 12-13 does NOT block, tentative at 14-15 blocks
+    // Free: 08-09 (1h), 10-14 (4h, lunch is free so doesn't block), 15-16 (1h)
+    expect(slots).toHaveLength(3);
+    expect(slots[0].duration).toBe("1h");     // 08:00-09:00
+    expect(slots[1].duration).toBe("4h");     // 10:00-14:00 (lunch doesn't block)
+    expect(slots[2].duration).toBe("1h");     // 15:00-16:00
+  });
+
+  it("findFreeSlots treats events without freeBusyStatus as busy", async () => {
+    mockFetchWithCalendarsAndEvents([
+      {
+        "@type": "Event",
+        id: "ev-no-status",
+        calendarId: "cal-work",
+        title: "Legacy Event",
+        start: "2026-02-10T10:00:00Z",
+        duration: "PT1H",
+        timeZone: "America/New_York",
+        showWithoutTime: false,
+        // No freeBusyStatus field
+      },
+    ]);
+
+    const slots = await findFreeSlots({
+      start: "2026-02-10T09:00:00Z",
+      end: "2026-02-10T12:00:00Z",
+      minMinutes: 30,
+    });
+
+    // Event without status blocks: free 09-10 and 11-12
+    expect(slots).toHaveLength(2);
+  });
+
   it("findFreeSlots respects minMinutes filter", async () => {
     mockFetchWithCalendarsAndEvents([
       {

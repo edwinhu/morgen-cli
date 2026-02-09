@@ -610,7 +610,10 @@ function formatEvent(event: MorgenEvent & { calendarName?: string }): string {
   const cal = event.calendarName
     ? `  ${colors.dim}[${event.calendarName}]${colors.reset}`
     : "";
-  return `${time} ${event.title}${dur}${cal}  ${colors.dim}${event.id}${colors.reset}`;
+  const status = event.freeBusyStatus && event.freeBusyStatus !== "busy"
+    ? `  ${colors.yellow}(${event.freeBusyStatus})${colors.reset}`
+    : "";
+  return `${time} ${event.title}${dur}${status}${cal}  ${colors.dim}${event.id}${colors.reset}`;
 }
 
 // ---------------------------------------------------------------------------

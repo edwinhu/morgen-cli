@@ -354,6 +354,7 @@ async function executeCalendarRead(args: {
     duration: e.duration,
     timeZone: e.timeZone,
     calendar: e.calendarName || e.calendarId,
+    status: e.freeBusyStatus || "busy",
     ...(e.participants?.length ? { attendees: e.participants } : {}),
     ...(e.locations?.length ? { location: e.locations[0]?.name } : {}),
     ...(args.includeBody && e.description
