@@ -218,6 +218,10 @@ export async function findFreeSlots(options: {
   const rangeEnd = new Date(options.end).getTime();
   const minMs = (options.minMinutes ?? 30) * 60 * 1000;
 
+  // Format as floating local time (no Z suffix) to match event start format
+  const toFloatingLocal = (ms: number): string =>
+    new Date(ms).toISOString().replace(/\.000Z$/, "").replace(/Z$/, "");
+
   const freeSlots: FreeSlot[] = [];
   let cursor = rangeStart;
 
@@ -226,8 +230,8 @@ export async function findFreeSlots(options: {
       const gap = busyStart - cursor;
       if (gap >= minMs) {
         freeSlots.push({
-          start: new Date(cursor).toISOString(),
-          end: new Date(busyStart).toISOString(),
+          start: toFloatingLocal(cursor),
+          end: toFloatingLocal(busyStart),
           duration: formatDuration(gap),
         });
       }
@@ -240,8 +244,8 @@ export async function findFreeSlots(options: {
     const gap = rangeEnd - cursor;
     if (gap >= minMs) {
       freeSlots.push({
-        start: new Date(cursor).toISOString(),
-        end: new Date(rangeEnd).toISOString(),
+        start: toFloatingLocal(cursor),
+        end: toFloatingLocal(rangeEnd),
         duration: formatDuration(gap),
       });
     }
