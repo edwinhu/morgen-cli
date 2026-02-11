@@ -94,6 +94,7 @@ interface CliOptions {
   calendars?: string[];
   excludeCalendars?: string[];
   onlyPrimary?: boolean;
+  port?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +185,7 @@ function setNamedArg(opts: CliOptions, key: string, value: string): void {
     case "location": opts.location = value; break;
     case "attendees": opts.attendees = value; break;
     case "min-minutes": opts.minMinutes = parseInt(value, 10); break;
+    case "port": opts.port = parseInt(value, 10); break;
     // Chat calendar filtering
     case "calendars": opts.calendars = value.split(",").map((s) => s.trim()); break;
     case "exclude-calendars": opts.excludeCalendars = value.split(",").map((s) => s.trim()); break;
@@ -284,6 +286,7 @@ ${colors.bold}OPTIONS${colors.reset}
   --calendars <names> Filter: only include these calendars (for chat/free)
   --exclude-calendars <names> Filter: exclude these calendars
   --only-primary      Filter: only primary calendar (for chat)
+  --port <number>     CDP port (default: from CDP_PORT env or 9400)
   --json              Output as JSON
   --help              Show this help
   --version           Show version
@@ -336,7 +339,7 @@ ${colors.bold}ENVIRONMENT${colors.reset}
 // ---------------------------------------------------------------------------
 async function handleAuth(opts: CliOptions) {
   try {
-    const result = await authenticate();
+    const result = await authenticate(opts.port);
     if (opts.json) {
       console.log(JSON.stringify({
         email: result.email,

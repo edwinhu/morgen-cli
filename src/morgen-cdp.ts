@@ -17,7 +17,7 @@ import { resolve } from "path";
 import { homedir } from "os";
 
 const API_BASE = "https://api.morgen.so";
-const DEFAULT_PORT = 9223;
+const DEFAULT_PORT = parseInt(process.env.CDP_PORT || "9400", 10);
 const SESSION_FILE = resolve(homedir(), ".config", "morgen-cli", "session.json");
 
 /**
@@ -40,7 +40,7 @@ export async function isMorgenRunning(port = DEFAULT_PORT): Promise<boolean> {
   try {
     const host = getCDPHost();
     const targets = await CDP.List({ host, port });
-    return targets.some((t: any) => t.title === "Morgen Calendar" || t.url?.includes("morgen"));
+    return targets.some((t: any) => t.title === "Morgen Calendar" || t.url?.includes("morgen.so"));
   } catch {
     return false;
   }
@@ -53,7 +53,8 @@ async function extractCredentials(port = DEFAULT_PORT): Promise<{
 }> {
   const host = getCDPHost();
   const targets = await CDP.List({ host, port });
-  const pageTarget = targets.find((t: any) => t.type === "page");
+  const pageTarget = targets.find((t: any) => t.type === "page" && t.url?.includes("morgen.so"))
+    || targets.find((t: any) => t.type === "page");
   if (!pageTarget) throw new Error("Morgen page target not found via CDP");
 
   const client = await CDP({ host, port, target: pageTarget });
@@ -64,7 +65,9 @@ async function extractCredentials(port = DEFAULT_PORT): Promise<{
       expression: `
         (async () => {
           const refreshToken = localStorage.getItem("morgen-refresh-token");
-          const deviceId = await window.electronAPI.localStorage.get("morgen-device-id");
+          const deviceId = window.electronAPI
+            ? await window.electronAPI.localStorage.get("morgen-device-id")
+            : localStorage.getItem("morgen-device-id");
           return JSON.stringify({ refreshToken, deviceId });
         })()
       `,
@@ -166,8 +169,9 @@ export async function authenticate(port = DEFAULT_PORT): Promise<{
 }> {
   if (!(await isMorgenRunning(port))) {
     throw new Error(
-      "Morgen is not running with CDP enabled.\n" +
-      "Start Morgen with: /Applications/Morgen.app/Contents/MacOS/Morgen --remote-debugging-port=9223"
+      `Morgen is not reachable via CDP on port ${port}.\n` +
+      "Start headless Chrome: nanoclaw-chrome start\n" +
+      "Or run Morgen desktop: /Applications/Morgen.app/Contents/MacOS/Morgen --remote-debugging-port=9400"
     );
   }
 
@@ -178,7 +182,8 @@ export async function authenticate(port = DEFAULT_PORT): Promise<{
   // Get email from Morgen app
   const host = getCDPHost();
   const targets = await CDP.List({ host, port });
-  const pageTarget = targets.find((t: any) => t.type === "page");
+  const pageTarget = targets.find((t: any) => t.type === "page" && t.url?.includes("morgen.so"))
+    || targets.find((t: any) => t.type === "page");
   let email = "unknown";
   if (pageTarget) {
     const client = await CDP({ host, port, target: pageTarget });
