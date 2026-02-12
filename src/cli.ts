@@ -28,6 +28,7 @@ import { sendChat } from "./chat";
 import { MorgenApiError } from "./morgen-api";
 import { authenticate } from "./morgen-cdp";
 import type { MorgenTask, MorgenEvent, MorgenCalendar, CreateTaskInput, UpdateTaskInput } from "./types";
+import { convertToTimezone, formatTimeForDisplay } from "./time";
 import pkg from "../package.json";
 
 const VERSION = pkg.version;
@@ -202,16 +203,22 @@ function providerBadge(integrationId: string): string {
   return `${colors.dim}[${integrationId}]${colors.reset}`;
 }
 
-function formatTask(task: MorgenTask): string {
+function formatTask(task: MorgenTask, targetTz?: string): string {
   const progress =
     task.progress === "completed"
       ? `${colors.green}\u2713${colors.reset}`
       : task.progress === "in-process"
         ? `${colors.yellow}\u25D0${colors.reset}`
         : `${colors.dim}\u25CB${colors.reset}`;
-  const due = task.due
-    ? `  ${colors.dim}due ${task.due.split("T")[0]}${colors.reset}`
-    : "";
+  let due = "";
+  if (task.due) {
+    if (targetTz && task.timeZone) {
+      const converted = convertToTimezone(task.due, task.timeZone, targetTz);
+      due = `  ${colors.dim}due ${converted.split("T")[0]}${colors.reset}`;
+    } else {
+      due = `  ${colors.dim}due ${task.due.split("T")[0]}${colors.reset}`;
+    }
+  }
   const pri =
     task.priority && task.priority > 0 && task.priority <= 3
       ? ` ${colors.red}!${colors.reset}`
@@ -222,10 +229,10 @@ function formatTask(task: MorgenTask): string {
   return `${progress} ${task.title}${pri}${due}${source}  ${colors.dim}${task.id}${colors.reset}`;
 }
 
-function formatTaskList(tasks: MorgenTask[]): string {
+function formatTaskList(tasks: MorgenTask[], targetTz?: string): string {
   if (tasks.length === 0)
     return `${colors.dim}No tasks found${colors.reset}`;
-  return tasks.map(formatTask).join("\n");
+  return tasks.map((t) => formatTask(t, targetTz)).join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -392,9 +399,14 @@ async function handleTasks(opts: CliOptions) {
       tasks = await listTasks({ limit: opts.limit, accountId: opts.account });
     }
     if (opts.json) {
-      console.log(JSON.stringify(tasks, null, 2));
+      const output = opts.timeZone
+        ? tasks.map((t) => t.due && t.timeZone
+            ? { ...t, due: convertToTimezone(t.due, t.timeZone, opts.timeZone!) }
+            : t)
+        : tasks;
+      console.log(JSON.stringify(output, null, 2));
     } else {
-      console.log(formatTaskList(tasks));
+      console.log(formatTaskList(tasks, opts.timeZone));
     }
     return;
   }
@@ -406,9 +418,12 @@ async function handleTasks(opts: CliOptions) {
     }
     const task = await getTask(opts.positional);
     if (opts.json) {
-      console.log(JSON.stringify(task, null, 2));
+      const output = opts.timeZone && task.due && task.timeZone
+        ? { ...task, due: convertToTimezone(task.due, task.timeZone, opts.timeZone) }
+        : task;
+      console.log(JSON.stringify(output, null, 2));
     } else {
-      console.log(formatTask(task));
+      console.log(formatTask(task, opts.timeZone));
       if (task.description) console.log(`\n${task.description}`);
     }
     return;
@@ -611,10 +626,15 @@ function formatCalendar(cal: MorgenCalendar): string {
   return `  ${write} ${cal.name}  ${colors.dim}${cal.id}${colors.reset}`;
 }
 
-function formatEvent(event: MorgenEvent & { calendarName?: string }): string {
-  const time = event.showWithoutTime
-    ? `${colors.cyan}all-day${colors.reset}`
-    : `${colors.cyan}${event.start.split("T")[1]?.slice(0, 5) || event.start}${colors.reset}`;
+function formatEvent(event: MorgenEvent & { calendarName?: string }, targetTz?: string): string {
+  let timeStr: string;
+  if (event.showWithoutTime) {
+    timeStr = `${colors.cyan}all-day${colors.reset}`;
+  } else if (targetTz) {
+    timeStr = `${colors.cyan}${formatTimeForDisplay(event.start, event.timeZone, targetTz)}${colors.reset}`;
+  } else {
+    timeStr = `${colors.cyan}${event.start.split("T")[1]?.slice(0, 5) || event.start}${colors.reset}`;
+  }
   const dur = event.duration ? `  ${colors.dim}${event.duration}${colors.reset}` : "";
   const cal = event.calendarName
     ? `  ${colors.dim}[${event.calendarName}]${colors.reset}`
@@ -622,7 +642,7 @@ function formatEvent(event: MorgenEvent & { calendarName?: string }): string {
   const status = event.freeBusyStatus && event.freeBusyStatus !== "busy"
     ? `  ${colors.yellow}(${event.freeBusyStatus})${colors.reset}`
     : "";
-  return `${time} ${event.title}${dur}${status}${cal}  ${colors.dim}${event.id}${colors.reset}`;
+  return `${timeStr} ${event.title}${dur}${status}${cal}  ${colors.dim}${event.id}${colors.reset}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -669,13 +689,19 @@ async function handleCalendar(opts: CliOptions) {
     });
 
     if (opts.json) {
-      console.log(JSON.stringify(events, null, 2));
+      const output = opts.timeZone
+        ? events.map((e) => ({
+            ...e,
+            start: e.showWithoutTime ? e.start : convertToTimezone(e.start, e.timeZone, opts.timeZone!),
+          }))
+        : events;
+      console.log(JSON.stringify(output, null, 2));
     } else {
       if (events.length === 0) {
         console.log(`${colors.dim}No events found${colors.reset}`);
       } else {
         for (const event of events) {
-          console.log(formatEvent(event));
+          console.log(formatEvent(event, opts.timeZone));
         }
       }
     }
@@ -800,6 +826,7 @@ async function handleCalendar(opts: CliOptions) {
       end: opts.end,
       calendarIds: opts.calendars,
       minMinutes: opts.minMinutes,
+      timeZone: opts.timeZone,
     });
 
     if (opts.json) {

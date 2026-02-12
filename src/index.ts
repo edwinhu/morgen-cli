@@ -26,6 +26,7 @@ export {
   resetCalendarCache,
 } from "./calendars.ts";
 export { sendChat, parseSSEStream } from "./chat.ts";
+export { convertToTimezone, formatTimeForDisplay } from "./time.ts";
 export { TOOL_DEFINITIONS, executeTool } from "./tools.ts";
 export type { ListTasksOptions } from "./tasks.ts";
 export {

@@ -12,6 +12,7 @@ import type {
   EventListResponse,
   CreateEventInput,
 } from "./types";
+import { convertToTimezone } from "./time";
 
 // ---------------------------------------------------------------------------
 // Calendar cache (avoids repeated /calendars/list calls within one session)
@@ -180,6 +181,7 @@ export async function findFreeSlots(options: {
   end: string;
   calendarIds?: string[];
   minMinutes?: number;
+  timeZone?: string;
 }): Promise<FreeSlot[]> {
   const events = await listEvents({
     start: options.start,
@@ -218,9 +220,15 @@ export async function findFreeSlots(options: {
   const rangeEnd = new Date(options.end).getTime();
   const minMs = (options.minMinutes ?? 30) * 60 * 1000;
 
-  // Format as floating local time (no Z suffix) to match event start format
-  const toFloatingLocal = (ms: number): string =>
-    new Date(ms).toISOString().replace(/\.000Z$/, "").replace(/Z$/, "");
+  // Format timestamps: if timezone requested, convert; otherwise floating UTC
+  const formatTime = (ms: number): string => {
+    if (options.timeZone) {
+      // Convert UTC ms to target timezone with offset
+      const utcIso = new Date(ms).toISOString().replace(/\.000Z$/, "").replace(/Z$/, "");
+      return convertToTimezone(utcIso, "UTC", options.timeZone);
+    }
+    return new Date(ms).toISOString().replace(/\.000Z$/, "").replace(/Z$/, "");
+  };
 
   const freeSlots: FreeSlot[] = [];
   let cursor = rangeStart;
@@ -230,8 +238,8 @@ export async function findFreeSlots(options: {
       const gap = busyStart - cursor;
       if (gap >= minMs) {
         freeSlots.push({
-          start: toFloatingLocal(cursor),
-          end: toFloatingLocal(busyStart),
+          start: formatTime(cursor),
+          end: formatTime(busyStart),
           duration: formatDuration(gap),
         });
       }
@@ -244,8 +252,8 @@ export async function findFreeSlots(options: {
     const gap = rangeEnd - cursor;
     if (gap >= minMs) {
       freeSlots.push({
-        start: toFloatingLocal(cursor),
-        end: toFloatingLocal(rangeEnd),
+        start: formatTime(cursor),
+        end: formatTime(rangeEnd),
         duration: formatDuration(gap),
       });
     }
