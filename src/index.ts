@@ -35,5 +35,5 @@ export {
   saveSession,
   isMorgenRunning,
 } from "./morgen-cdp.ts";
-export type { SessionInfo } from "./morgen-cdp.ts";
+export type { SessionInfo, ConnectionSource } from "./morgen-cdp.ts";
 export type * from "./types.ts";

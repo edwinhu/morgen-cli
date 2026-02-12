@@ -3,6 +3,10 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 // Mock loadSession to return null so we can test API-key-only auth paths
 mock.module("../morgen-cdp", () => ({
   loadSession: async () => null,
+  saveSession: async () => {},
+  isMorgenRunning: async () => false,
+  authenticate: async () => ({ email: "", expiresAt: 0, source: "electron" }),
+  getSessionToken: async () => "",
 }));
 
 describe("morgenFetch", () => {

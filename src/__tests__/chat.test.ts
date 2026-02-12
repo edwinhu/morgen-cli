@@ -13,6 +13,10 @@ let mockLoadSessionResult: { token: string; apiToken: string; refreshToken: stri
 
 mock.module("../morgen-cdp", () => ({
   loadSession: () => Promise.resolve(mockLoadSessionResult),
+  saveSession: async () => {},
+  isMorgenRunning: async () => false,
+  authenticate: async () => ({ email: "", expiresAt: 0, source: "electron" }),
+  getSessionToken: async () => "",
 }));
 
 // Import chat functions after mock is set up

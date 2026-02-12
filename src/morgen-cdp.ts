@@ -1,14 +1,18 @@
 /**
  * Morgen CDP Module
  *
- * Connects to the running Morgen Electron app via Chrome DevTools Protocol
- * to extract authentication credentials. The session token enables full
- * integration task CRUD through the Morgen API.
+ * Connects to the running Morgen Electron app or Chrome browser via Chrome
+ * DevTools Protocol to extract authentication credentials. The session token
+ * enables full integration task CRUD through the Morgen API.
+ *
+ * Auth discovery order:
+ *   1. Morgen Electron app (title "Morgen Calendar")
+ *   2. Chrome browser with app.morgen.so open
  *
  * Flow:
- *   1. Connect to Morgen's CDP on localhost:9223
+ *   1. Connect via CDP to Electron or Chrome
  *   2. Read morgen-refresh-token from renderer localStorage
- *   3. Read morgen-device-id from electronAPI.localStorage (main process)
+ *   3. Read morgen-device-id from electronAPI.localStorage (Electron) or localStorage (Chrome)
  *   4. Exchange via POST /identity/refresh → session token (1h TTL)
  */
 
@@ -27,62 +31,90 @@ function getCDPHost(): string {
   return process.env.CDP_HOST || process.env.HOST_IP || "localhost";
 }
 
+export type ConnectionSource = "electron" | "chrome";
+
 export interface SessionInfo {
   token: string; // AI gateway token (for ai.cf.morgen.so)
   apiToken: string; // Regular API token (for api.morgen.so)
   refreshToken: string;
   deviceId: string;
   expiresAt: number; // Unix timestamp ms
+  source?: ConnectionSource; // "electron" or "chrome"
 }
 
-/** Check if Morgen is running with CDP enabled. */
-export async function isMorgenRunning(port = DEFAULT_PORT): Promise<boolean> {
+/** Check if Morgen is reachable via CDP. Returns connection source or false. */
+export async function isMorgenRunning(port = DEFAULT_PORT): Promise<ConnectionSource | false> {
   try {
     const host = getCDPHost();
     const targets = await CDP.List({ host, port });
-    return targets.some((t: any) => t.title === "Morgen Calendar" || t.url?.includes("morgen.so"));
+    if (targets.some((t: any) => t.title === "Morgen Calendar")) return "electron";
+    if (targets.some((t: any) => t.type === "page" && t.url?.includes("morgen.so"))) return "chrome";
+    return false;
   } catch {
     return false;
   }
 }
 
-/** Extract refresh token and device ID from running Morgen app. */
-async function extractCredentials(port = DEFAULT_PORT): Promise<{
+/**
+ * Connect to Morgen via CDP. Tries Electron app first, then Chrome browser.
+ * Returns the connection source and CDP client.
+ */
+async function connectToMorgen(port: number): Promise<{ source: ConnectionSource; client: CDP.Client }> {
+  const host = getCDPHost();
+  const targets = await CDP.List({ host, port });
+
+  // Try Electron app first (specific window title)
+  const electronTarget = targets.find((t: any) =>
+    t.type === "page" && t.title === "Morgen Calendar"
+  );
+  if (electronTarget) {
+    const client = await CDP({ host, port, target: electronTarget });
+    return { source: "electron", client };
+  }
+
+  // Fall back to Chrome (any page with morgen.so URL)
+  const chromeTarget = targets.find((t: any) =>
+    t.type === "page" && t.url?.includes("morgen.so")
+  );
+  if (chromeTarget) {
+    const client = await CDP({ host, port, target: chromeTarget });
+    return { source: "chrome", client };
+  }
+
+  throw new Error(
+    `No Morgen target found on port ${port}.\n` +
+    "Start one of:\n" +
+    "  Chrome:   nanoclaw-chrome start\n" +
+    "  Electron: /Applications/Morgen.app/Contents/MacOS/Morgen --remote-debugging-port=" + port
+  );
+}
+
+/** Extract refresh token and device ID from an existing CDP client. */
+async function extractCredentialsFromClient(client: CDP.Client): Promise<{
   refreshToken: string;
   deviceId: string;
 }> {
-  const host = getCDPHost();
-  const targets = await CDP.List({ host, port });
-  const pageTarget = targets.find((t: any) => t.type === "page" && t.url?.includes("morgen.so"))
-    || targets.find((t: any) => t.type === "page");
-  if (!pageTarget) throw new Error("Morgen page target not found via CDP");
+  const { Runtime } = client;
 
-  const client = await CDP({ host, port, target: pageTarget });
-  try {
-    const { Runtime } = client;
+  const result = await Runtime.evaluate({
+    expression: `
+      (async () => {
+        const refreshToken = localStorage.getItem("morgen-refresh-token");
+        const deviceId = window.electronAPI
+          ? await window.electronAPI.localStorage.get("morgen-device-id")
+          : localStorage.getItem("morgen-device-id");
+        return JSON.stringify({ refreshToken, deviceId });
+      })()
+    `,
+    awaitPromise: true,
+    returnByValue: true,
+  });
 
-    const result = await Runtime.evaluate({
-      expression: `
-        (async () => {
-          const refreshToken = localStorage.getItem("morgen-refresh-token");
-          const deviceId = window.electronAPI
-            ? await window.electronAPI.localStorage.get("morgen-device-id")
-            : localStorage.getItem("morgen-device-id");
-          return JSON.stringify({ refreshToken, deviceId });
-        })()
-      `,
-      awaitPromise: true,
-      returnByValue: true,
-    });
+  const creds = JSON.parse(result.result.value);
+  if (!creds.refreshToken) throw new Error("No morgen-refresh-token found in Morgen app");
+  if (!creds.deviceId) throw new Error("No morgen-device-id found in Morgen app");
 
-    const creds = JSON.parse(result.result.value);
-    if (!creds.refreshToken) throw new Error("No morgen-refresh-token found in Morgen app");
-    if (!creds.deviceId) throw new Error("No morgen-device-id found in Morgen app");
-
-    return creds;
-  } finally {
-    await client.close();
-  }
+  return creds;
 }
 
 /** Exchange a refresh token for a session token via Morgen's identity API. */
@@ -145,59 +177,52 @@ export async function loadSession(): Promise<SessionInfo | null> {
 
 /**
  * Get a valid session token. Tries cached session first,
- * then extracts from running Morgen app.
+ * then extracts from running Morgen app or Chrome browser.
  */
 export async function getSessionToken(port = DEFAULT_PORT): Promise<string> {
   // Try cached session
   const cached = await loadSession();
   if (cached) return cached.token;
 
-  // Extract from running Morgen app
-  const creds = await extractCredentials(port);
-  const session = await exchangeForSession(creds.refreshToken, creds.deviceId);
-  await saveSession(session);
-  return session.token;
+  // Extract from running Morgen app or Chrome
+  const conn = await connectToMorgen(port);
+  try {
+    const creds = await extractCredentialsFromClient(conn.client);
+    const session = await exchangeForSession(creds.refreshToken, creds.deviceId);
+    session.source = conn.source;
+    await saveSession(session);
+    return session.token;
+  } finally {
+    await conn.client.close();
+  }
 }
 
 /**
- * Authenticate: extract credentials from running Morgen app and save session.
- * Returns account info for display.
+ * Authenticate: extract credentials from running Morgen app or Chrome browser
+ * and save session. Returns account info for display.
  */
 export async function authenticate(port = DEFAULT_PORT): Promise<{
   email: string;
   expiresAt: number;
+  source: ConnectionSource;
 }> {
-  if (!(await isMorgenRunning(port))) {
-    throw new Error(
-      `Morgen is not reachable via CDP on port ${port}.\n` +
-      "Start headless Chrome: nanoclaw-chrome start\n" +
-      "Or run Morgen desktop: /Applications/Morgen.app/Contents/MacOS/Morgen --remote-debugging-port=9400"
-    );
+  const conn = await connectToMorgen(port);
+  try {
+    const creds = await extractCredentialsFromClient(conn.client);
+    const session = await exchangeForSession(creds.refreshToken, creds.deviceId);
+    session.source = conn.source;
+    await saveSession(session);
+
+    // Get email from the same connection
+    const { Runtime } = conn.client;
+    const result = await Runtime.evaluate({
+      expression: `localStorage.getItem("morgen-email") || "unknown"`,
+      returnByValue: true,
+    });
+    const email = result.result.value;
+
+    return { email, expiresAt: session.expiresAt, source: conn.source };
+  } finally {
+    await conn.client.close();
   }
-
-  const creds = await extractCredentials(port);
-  const session = await exchangeForSession(creds.refreshToken, creds.deviceId);
-  await saveSession(session);
-
-  // Get email from Morgen app
-  const host = getCDPHost();
-  const targets = await CDP.List({ host, port });
-  const pageTarget = targets.find((t: any) => t.type === "page" && t.url?.includes("morgen.so"))
-    || targets.find((t: any) => t.type === "page");
-  let email = "unknown";
-  if (pageTarget) {
-    const client = await CDP({ host, port, target: pageTarget });
-    try {
-      const { Runtime } = client;
-      const result = await Runtime.evaluate({
-        expression: `localStorage.getItem("morgen-email") || "unknown"`,
-        returnByValue: true,
-      });
-      email = result.result.value;
-    } finally {
-      await client.close();
-    }
-  }
-
-  return { email, expiresAt: session.expiresAt };
 }

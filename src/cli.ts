@@ -292,10 +292,14 @@ ${colors.bold}OPTIONS${colors.reset}
   --version           Show version
 
 ${colors.bold}AUTH${colors.reset}
-  Session token auth (from 'morgen auth') enables close/reopen on
-  Google Tasks and MS To Do. Requires Morgen desktop app running with:
-    /Applications/Morgen.app/Contents/MacOS/Morgen --remote-debugging-port=9223
+  Two auth paths (tried in order):
+    1. Morgen desktop app (Electron) — run with:
+       /Applications/Morgen.app/Contents/MacOS/Morgen --remote-debugging-port=9400
+    2. Chrome browser with app.morgen.so open — run with:
+       nanoclaw-chrome start
 
+  Use --port to specify the CDP port (default: 9400 or CDP_PORT env).
+  Session tokens are cached in ~/.config/morgen-cli/session.json.
   Alternatively, set MORGEN_API_KEY for basic read + Morgen-native CRUD.
 
 ${colors.bold}EXAMPLES${colors.reset}
@@ -344,9 +348,11 @@ async function handleAuth(opts: CliOptions) {
       console.log(JSON.stringify({
         email: result.email,
         expiresAt: new Date(result.expiresAt).toISOString(),
+        source: result.source,
       }));
     } else {
-      success(`Authenticated as ${result.email}`);
+      const sourceLabel = result.source === "electron" ? "Morgen app" : "Chrome browser";
+      success(`Authenticated as ${result.email} (via ${sourceLabel})`);
       info(`Session expires: ${new Date(result.expiresAt).toLocaleString()}`);
     }
   } catch (err) {
