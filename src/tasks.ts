@@ -86,7 +86,8 @@ export async function listTasks(
   options?: ListTasksOptions
 ): Promise<MorgenTask[]> {
   const params: Record<string, string> = {};
-  if (options?.limit) params.limit = String(options.limit);
+  // API defaults to ~4 tasks without explicit limit
+  params.limit = String(options?.limit || 200);
   if (options?.updatedAfter) params.updatedAfter = options.updatedAfter;
   if (options?.accountId) params.accountId = options.accountId;
 
@@ -100,13 +101,25 @@ export async function listAllTasks(
   const accounts = await listIntegrationAccounts();
   const limit = options?.limit;
 
-  const perAccountPromises = accounts.map((acct) =>
-    listTasks({ ...options, accountId: acct._id }).catch(() => [] as MorgenTask[])
-  );
-  const nativePromise = listTasks(options).catch(() => [] as MorgenTask[]);
+  // Fetch sequentially to avoid Morgen API rate limits (parallel causes partial results)
+  const allTasks: MorgenTask[] = [];
 
-  const results = await Promise.all([nativePromise, ...perAccountPromises]);
-  const allTasks = results.flat();
+  // Native tasks first
+  try {
+    allTasks.push(...await listTasks(options));
+  } catch (e: any) {
+    console.error(`Warning: failed to fetch native tasks: ${e.message}`);
+  }
+
+  // Then each integration account
+  for (const acct of accounts) {
+    try {
+      allTasks.push(...await listTasks({ ...options, accountId: acct._id }));
+    } catch (e: any) {
+      const name = acct.providerUserDisplayName || acct._id;
+      console.error(`Warning: failed to fetch tasks for ${name}: ${e.message}`);
+    }
+  }
 
   const seen = new Set<string>();
   const unique = allTasks.filter((t) => {

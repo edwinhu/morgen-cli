@@ -38,3 +38,4 @@ morgen-linux
 
 # worktrees
 .worktrees/
+.claude/ACTIVE_WORKFLOW.md

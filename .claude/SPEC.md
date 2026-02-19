@@ -1,125 +1,114 @@
-# Spec: Morgen AI Chat Integration
+# Spec: Fix --timezone flag to convert output times (Issue #7)
+
+> **For Claude:** After writing this spec, use `Read("/Users/vwh7mb/.claude/plugins/cache/edwinhu-plugins/workflows/4.0.0/lib/skills/dev-explore/SKILL.md")` for Phase 2.
 
 ## Problem
-Morgen has an AI chat feature in its desktop app that understands natural language requests about calendar and task management. The API is undocumented but has been reverse-engineered via CDP network interception.
 
-## Discovery Results (2026-02-08)
-
-### Endpoint
-`POST https://ai.cf.morgen.so/openrouter/chat/completions`
-
-### Authentication
-- `Authorization: Bearer <JWT_SESSION_TOKEN>` — NOT the MORGEN_API_KEY
-- JWT from Morgen session token (already implemented in `src/morgen-cdp.ts`)
-- Session token obtained via refresh token exchange at `POST /identity/refresh`
-- TTL ~1 hour, auto-refreshable via stored refresh token
-
-### Request Format
-OpenAI-compatible chat completions (proxied through Cloudflare AI Gateway → OpenRouter):
-```json
-{
-  "model": "anthropic/claude-haiku-4.5",
-  "response_format": { "type": "text" },
-  "messages": [
-    { "role": "system", "content": "<scheduling agent system prompt>" },
-    { "role": "user", "content": "what's on my calendar today?" }
-  ],
-  "tools": [...],
-  "parallel_tool_calls": true,
-  "stream": true
-}
-```
-
-### Response Format
-- SSE streaming (`text/event-stream`)
-- Standard OpenAI chunk format via OpenRouter
-- Tool calls returned as `finish_reason: "tool_calls"` with function name + args
-- Usage stats in final chunk
-
-### Architecture
-- Multi-agent system ("Agents SDK") with Agents and Handoffs
-- Primary: "Scheduling Agent" — executive assistant persona
-- Tools: `calendarRead`, `calendarComputeOptimalSchedule`, `taskEditContext`
-- Agent handoffs via `transfer_to_<agent_name>` function calls
-- Client-side tool execution: Morgen app runs tools, sends results back in follow-up request
-
-### Two-Request Pattern
-1. First POST: user message → AI may respond with tool calls (e.g., `calendarRead`)
-2. Second POST: tool results included → AI responds with final text answer
+The `--timezone` flag on `morgen calendar events` only affects how `--start`/`--end` input parameters are interpreted. The output times (both JSON and human-readable) remain in UTC regardless of the `--timezone` flag. Users expect output times to be converted to their requested timezone.
 
 ## Requirements
-1. Build `src/chat.ts` — chat API client with SSE streaming support
-2. Add `morgen chat "prompt"` CLI command with streaming terminal output
-3. Add `morgen chat --json "prompt"` for structured JSON output
-4. Handle tool calls gracefully (either execute locally or show tool call info)
-5. Require session token auth (CDP or cached session)
+
+- When `--timezone` is specified, all output times must be converted to that timezone
+- JSON times should use ISO 8601 with offset format (e.g., `2026-02-12T05:00:00-05:00`)
+- Human-readable output should also display times in the requested timezone
+- When `--timezone` is NOT specified, keep current behavior (UTC)
+- All time-displaying commands should respect `--timezone`: calendar events, calendar free, task schedule times, etc.
+- No new dependencies — use Intl.DateTimeFormat or equivalent built-in APIs
 
 ## Success Criteria
-- [x] AI chat API endpoint discovered and documented
-- [ ] `morgen chat "what's on my calendar today?"` works from terminal
-- [ ] `morgen chat --json "..."` returns structured JSON output
-- [ ] Streaming output displays tokens as they arrive
-- [ ] Unit tests pass with mocked SSE responses
-- [ ] Integration test passes against live API
+
+- [ ] `morgen calendar events --timezone America/New_York --json` returns times with `-05:00` offset (EST) or `-04:00` (EDT)
+- [ ] `morgen calendar events --timezone America/New_York` (human output) shows local times
+- [ ] `morgen calendar free --timezone America/New_York` shows free/busy in local time
+- [ ] Without `--timezone`, output remains UTC (backward compatible)
+- [ ] Unit tests pass for timezone conversion logic
 
 ## Constraints
-- Requires session token (not API key) — user must run `morgen auth` first
-- SSE streaming needs incremental parsing
-- Tool calls from AI are informational only (we don't execute `calendarRead` etc. server-side)
-- System prompt is injected server-side by Morgen, we only send user messages
-- CORS restricted to `morgen://.` origin — may need to omit or spoof origin header
+
+- Zero runtime dependencies (use built-in Intl APIs)
+- Must handle DST transitions correctly
+- Must not break existing `--start`/`--end` timezone interpretation
+
+## Exploration Findings
+
+### Time Data Model
+
+Events have **floating local time** in `start` (e.g., `"2026-02-10T09:00:00"`) with a separate `timeZone` field (e.g., `"America/New_York"`). The start time is already in the event's timezone — it's NOT UTC despite sometimes having a Z suffix in test data.
+
+Tasks have **floating local time** in `due` (e.g., `"2026-02-15T09:00:00"`) with optional `timeZone` field.
+
+Free slots are computed internally in UTC ms, then output via `toFloatingLocal()` which strips the Z suffix — producing floating UTC times.
+
+### Current Output Formatting (no shared utility)
+
+| Command | JSON | Human-readable | File:Line |
+|---------|------|----------------|-----------|
+| `calendar events` | Raw `JSON.stringify(events)` | `event.start.split("T")[1]?.slice(0,5)` → "09:00" | cli.ts:671, cli.ts:617 |
+| `calendar free` | Raw `JSON.stringify(slots)` | `slot.start.split("T")[1]?.slice(0,5)` → "09:00" | cli.ts:805, cli.ts:813 |
+| `tasks list/get` | Raw `JSON.stringify(task)` | `task.due.split("T")[0]` → "2026-02-15" | cli.ts:394-397, cli.ts:213 |
+
+### Timezone flag usage
+
+- **Parsed at:** cli.ts:184 (`case "timezone": case "tz": opts.timeZone = value`)
+- **Used for input only:** task create/update (cli.ts:435,471), event create (cli.ts:709), task schedule (cli.ts:563)
+- **NOT used for output:** events listing, free slots, task display
+
+### Conversion Strategy
+
+For **events**: interpret `event.start` as being in `event.timeZone`, convert to target `--timezone`, format with offset.
+
+For **free slots**: `toFloatingLocal()` currently produces UTC floating times. Need to convert UTC ms to target timezone instead.
+
+For **tasks**: `task.due` is floating local in `task.timeZone`. Convert similarly to events.
+
+### Code Paths
+
+| Path | Protocol | Entry | Data Flow |
+|------|----------|-------|-----------|
+| Events display | CLI args -> listEvents -> formatEvent/JSON | cli.ts:652 | API response -> raw string output |
+| Free slots | CLI args -> findFreeSlots -> format/JSON | cli.ts:787 | UTC ms -> toFloatingLocal -> string output |
+| Task display | CLI args -> listTasks -> formatTask/JSON | cli.ts:387 | API response -> raw string output |
+
+### Test Infrastructure
+
+- **Framework:** bun:test, 74 passing, 1 skipped
+- **Test command:** `bun test`
+- **Mocking patterns:** `globalThis.fetch` spy + `mock.module()` for CDP
+- **Existing pure function tests:** `decodeIntegrationId`, `parseDurationToMs`, free slot logic
+- **Test dir:** `src/__tests__/`
 
 ## Testing Strategy (MANDATORY - USER APPROVED)
 
-- **User's chosen approach:** Both unit + integration tests
+- **User's chosen approach:** Unit tests
 - **Framework:** bun:test
 - **Command:** `bun test`
+- **Testing skill to use:** Standard unit tests (bun:test)
 
 ### REAL Test Definition (MANDATORY)
 
 | Field | Value |
 |-------|-------|
-| **User workflow to replicate** | `morgen chat "prompt"` → see AI response in terminal |
-| **Code paths exercised** | Session token → fetch SSE → parse chunks → display text |
-| **What user sees/verifies** | AI response text streamed to terminal |
-| **Protocol/transport** | HTTPS POST with SSE response to `ai.cf.morgen.so` |
+| **User workflow to replicate** | `morgen calendar events --timezone America/New_York --json` -> verify times have correct offset |
+| **Code paths that must be exercised** | Floating local time + source tz -> Date -> target tz -> ISO 8601 with offset |
+| **What user actually sees/verifies** | Times in JSON/human output with correct timezone offset |
+| **Protocol/transport** | Direct function calls to pure conversion utilities |
 
 ### First Failing Test
 
-- **Test name:** `test_chat_sends_prompt_and_streams_response`
-- **What it tests:** Chat client sends prompt via SSE, collects streamed response
-- **How it replicates user workflow:** Calls `sendChat("prompt")`, verifies response text returned
-- **Expected failure message:** "sendChat is not a function" (module doesn't exist yet)
-
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `src/morgen-cdp.ts:76-100` | Session token exchange (already works) |
-| `src/morgen-api.ts:29-45` | Auth header logic (session token preferred) |
-| `src/cli.ts:462-497` | Main entry + command router |
-| `src/types.ts` | Type definitions |
-| `src/__tests__/tasks.test.ts:69-77` | Mock fetch pattern to follow |
+- **Test name:** `converts floating local time to ISO with offset in target timezone`
+- **What it tests:** Given "2026-02-12T10:00:00" in UTC, convert to America/New_York -> "2026-02-12T05:00:00-05:00"
+- **Expected failure message:** Function does not exist yet
 
 ## Clarified Requirements
 
-### Tool Call Handling
-- **Decision:** Simple passthrough — show AI text only
-- **Behavior:** If AI calls a tool (calendarRead, etc.), show informational message like "AI is reading your calendar..." but don't execute it
-- **Rationale:** Keeps implementation simple; full tool execution can be added later
+### JSON Output Shape
+- **Decision:** Modify `start` field in-place with offset (e.g., `"start": "2026-02-12T05:00:00-05:00"`)
+- **Rationale:** Simpler for consumers, original UTC derivable from offset
 
-### CORS Origin
-- **Decision:** Try without origin header first, fall back to spoofed `Origin: morgen://.` if rejected
-- **Rationale:** CLI (non-browser) requests may not need CORS; test both approaches
+### Task Due Dates
+- **Decision:** Yes, convert task due dates when `--timezone` is specified
+- **Rationale:** Consistent behavior across all time-displaying commands, even if timezone conversion shifts the date
 
-### Auth Requirement
-- **Decision:** Session token required (not API key)
-- **Behavior:** If no session token available, error with "Run 'morgen auth' first"
-- **Reference:** `src/morgen-cdp.ts` already handles session token extraction + caching
+## Open Questions
 
-## Open Questions (RESOLVED)
-- ~~What endpoint?~~ **`POST https://ai.cf.morgen.so/openrouter/chat/completions`**
-- ~~What auth?~~ **Bearer JWT session token (NOT API key)**
-- ~~Streamed?~~ **Yes, SSE (`text/event-stream`)**
-- ~~What context?~~ **Server injects system prompt with scheduling preferences + tools**
-- ~~Can we pass context?~~ **No, system prompt is server-side; we send user messages only**
+- None — all clarified

@@ -393,10 +393,12 @@ async function handleTasks(opts: CliOptions) {
   // Default: list tasks
   if (!sub || sub === "list") {
     let tasks;
-    if (opts.all) {
-      tasks = await listAllTasks({ limit: opts.limit });
-    } else {
+    if (opts.account) {
+      // Explicit account filter: query only that account
       tasks = await listTasks({ limit: opts.limit, accountId: opts.account });
+    } else {
+      // Default: query all accounts (native + integrations)
+      tasks = await listAllTasks({ limit: opts.limit });
     }
     if (opts.json) {
       const output = opts.timeZone
