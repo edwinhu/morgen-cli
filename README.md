@@ -27,13 +27,12 @@ Session auth enables close/reopen on integration tasks (Google Tasks, MS To Do) 
 ### Tasks
 
 ```bash
-morgen tasks                          # List Morgen-native tasks
-morgen tasks --all                    # List from all connected accounts
+morgen tasks                          # List tasks from all connected accounts
 morgen tasks --account <id>           # List from specific account
 morgen tasks get <id>                 # Get task details
 morgen tasks create --title "Do X"    # Create task
 morgen tasks update <id> --title "Y"  # Update task
-morgen tasks close <id>               # Mark complete
+morgen tasks close <id>               # Mark complete (works for MS Todo and Google Tasks)
 morgen tasks reopen <id>              # Reopen completed task
 morgen tasks delete <id>              # Delete task
 morgen tasks move <id> --after <id>   # Reorder task
@@ -81,15 +80,33 @@ morgen chat "schedule focus time" --only-primary
 ```bash
 morgen accounts                       # Show connected task accounts
 morgen auth                           # Authenticate via Morgen app
-morgen --json <any command>           # JSON output
 morgen --help                         # Full help
 ```
+
+## Output formats
+
+By default, output is human-readable with ANSI colors. Two structured output modes are available:
+
+| Flag | Behavior |
+|------|----------|
+| `--json` | Full JSON array, printed after all data is fetched |
+| `--ndjson` / `--stream` | Newline-delimited JSON, one object per line, streamed as results arrive |
+
+When stdout is **piped** (e.g. to `jq`, a file, or another process), NDJSON is enabled automatically — no flag needed:
+
+```bash
+morgen tasks | jq '.title'
+morgen calendar events | jq 'select(.title | test("standup"))'
+morgen tasks --ndjson | while read line; do echo "$line"; done
+```
+
+For `tasks` and `calendar events`, NDJSON streams results **per account in parallel** — you see the first account's tasks immediately while other accounts are still fetching.
 
 ## Development
 
 ```bash
 bun install
-bun test                              # Run tests (62 pass)
+bun test                              # Run tests (92 pass)
 bun run src/cli.ts <command>          # Run without building
 ```
 
