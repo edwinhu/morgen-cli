@@ -59,7 +59,7 @@ async function getAccounts(): Promise<IntegrationAccount[]> {
  */
 async function resolveIntegrationId(accountId: string): Promise<string | null> {
   const accounts = await getAccounts();
-  const account = accounts.find((a) => a._id === accountId);
+  const account = accounts.find((a) => a.id === accountId);
   return account?.integrationId || null;
 }
 
@@ -77,8 +77,11 @@ export async function listIntegrationAccounts(): Promise<IntegrationAccount[]> {
   const response = await morgenFetch<IntegrationAccountsResponse>(
     "/integrations/accounts/list"
   );
+  // Include accounts whose integrationGroups contains "tasks", OR where
+  // integrationGroups is absent (field not returned by API — include by default).
+  // Accounts with explicit non-tasks groups (e.g. ["calendars"]) are excluded.
   return (response.data.accounts || []).filter(
-    (a) => a.integrationGroups?.includes("tasks")
+    (a) => !a.integrationGroups || a.integrationGroups.includes("tasks")
   );
 }
 
@@ -114,9 +117,9 @@ export async function listAllTasks(
   // Then each integration account
   for (const acct of accounts) {
     try {
-      allTasks.push(...await listTasks({ ...options, accountId: acct._id }));
+      allTasks.push(...await listTasks({ ...options, accountId: acct.id }));
     } catch (e: any) {
-      const name = acct.providerUserDisplayName || acct._id;
+      const name = acct.providerUserDisplayName || acct.id;
       console.error(`Warning: failed to fetch tasks for ${name}: ${e.message}`);
     }
   }
@@ -141,6 +144,42 @@ export async function listAllTasks(
   });
 
   return limit ? unique.slice(0, limit) : unique;
+}
+
+/**
+ * Stream tasks per account in parallel: calls onBatch as each account's
+ * response arrives, without waiting for all accounts to complete.
+ * Tasks within a batch are in API order; no cross-account sorting is performed.
+ */
+export async function streamTasks(
+  options: Omit<ListTasksOptions, "accountId"> | undefined,
+  onBatch: (tasks: MorgenTask[]) => void
+): Promise<void> {
+  const accounts = await listIntegrationAccounts();
+
+  // Fetch native tasks + all integration accounts in parallel
+  const queries: Promise<void>[] = [];
+
+  queries.push(
+    listTasks(options).then((tasks) => {
+      if (tasks.length > 0) onBatch(tasks);
+    })
+  );
+
+  for (const acct of accounts) {
+    queries.push(
+      listTasks({ ...options, accountId: acct.id })
+        .then((tasks) => {
+          if (tasks.length > 0) onBatch(tasks);
+        })
+        .catch((e: Error) => {
+          const name = acct.providerUserDisplayName || acct.id;
+          process.stderr.write(`Warning: failed to fetch tasks for ${name}: ${e.message}\n`);
+        })
+    );
+  }
+
+  await Promise.all(queries);
 }
 
 // ---------------------------------------------------------------------------

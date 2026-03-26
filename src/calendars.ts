@@ -72,6 +72,16 @@ export interface ListEventsOptions {
   includeBody?: boolean;
 }
 
+function buildTimeParams(options: ListEventsOptions): { startParam: string; endParam: string } {
+  const startParam = options.start.includes("T")
+    ? options.start + (options.start.includes("Z") ? "" : "Z")
+    : options.start + "T00:00:00Z";
+  const endParam = options.end.includes("T")
+    ? options.end + (options.end.includes("Z") ? "" : "Z")
+    : options.end + "T23:59:59Z";
+  return { startParam, endParam };
+}
+
 export async function listEvents(
   options: ListEventsOptions
 ): Promise<(MorgenEvent & { calendarName?: string })[]> {
@@ -90,17 +100,12 @@ export async function listEvents(
     byAccount.set(cal.accountId, ids);
   }
 
+  const { startParam, endParam } = buildTimeParams(options);
+
   // Query events for each account in parallel
   const allEvents: MorgenEvent[] = [];
   const queries = [...byAccount.entries()].map(
     async ([accountId, calendarIds]) => {
-      const startParam = options.start.includes("T")
-        ? options.start + (options.start.includes("Z") ? "" : "Z")
-        : options.start + "T00:00:00Z";
-      const endParam = options.end.includes("T")
-        ? options.end + (options.end.includes("Z") ? "" : "Z")
-        : options.end + "T23:59:59Z";
-
       const resp = await morgenFetch<EventListResponse>("/events/list", {
         params: {
           accountId,
@@ -123,6 +128,50 @@ export async function listEvents(
     ...e,
     calendarName: calMap.get(e.calendarId),
   }));
+}
+
+/**
+ * Stream events per account: calls onBatch as each account's response arrives,
+ * without waiting for all accounts. Events within a batch are in API order;
+ * no cross-account sorting is performed.
+ */
+export async function streamEvents(
+  options: ListEventsOptions,
+  onBatch: (events: (MorgenEvent & { calendarName?: string })[]) => void
+): Promise<void> {
+  const calendars = await listCalendars();
+  const calMap = new Map(calendars.map((c) => [c.id, c.name]));
+
+  const filteredCals = options.calendarIds
+    ? calendars.filter((c) => options.calendarIds!.includes(c.id))
+    : calendars;
+
+  const byAccount = new Map<string, string[]>();
+  for (const cal of filteredCals) {
+    const ids = byAccount.get(cal.accountId) || [];
+    ids.push(cal.id);
+    byAccount.set(cal.accountId, ids);
+  }
+
+  const { startParam, endParam } = buildTimeParams(options);
+
+  await Promise.all(
+    [...byAccount.entries()].map(async ([accountId, calendarIds]) => {
+      const resp = await morgenFetch<EventListResponse>("/events/list", {
+        params: {
+          accountId,
+          calendarIds: calendarIds.join(","),
+          start: startParam,
+          end: endParam,
+        },
+      });
+      const batch = resp.data.events.map((e) => ({
+        ...e,
+        calendarName: calMap.get(e.calendarId),
+      }));
+      if (batch.length > 0) onBatch(batch);
+    })
+  );
 }
 
 export async function createEvent(input: CreateEventInput): Promise<string> {

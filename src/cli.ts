@@ -6,6 +6,7 @@
 import {
   listTasks,
   listAllTasks,
+  streamTasks,
   listIntegrationAccounts,
   getTask,
   createTask,
@@ -19,6 +20,7 @@ import {
 import {
   listCalendars,
   listEvents,
+  streamEvents,
   createEvent,
   updateEvent,
   deleteEvent,
@@ -56,6 +58,9 @@ function error(msg: string) {
 }
 function info(msg: string) {
   console.log(`${colors.blue}\u2139${colors.reset} ${msg}`);
+}
+function printNdjson(item: unknown) {
+  process.stdout.write(JSON.stringify(item) + "\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +101,7 @@ interface CliOptions {
   excludeCalendars?: string[];
   onlyPrimary?: boolean;
   port?: number;
+  ndjson?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,6 +135,7 @@ function parseArgs(args: string[]): CliOptions {
       const key = arg.slice(2);
 
       if (key === "json") { opts.json = true; i++; continue; }
+      if (key === "ndjson" || key === "stream") { opts.ndjson = true; i++; continue; }
       if (key === "help") { opts.help = true; i++; continue; }
       if (key === "version") { opts.version = true; i++; continue; }
       if (key === "all") { opts.all = true; i++; continue; }
@@ -160,6 +167,12 @@ function parseArgs(args: string[]): CliOptions {
   // Capture all positionals after the command for commands like "chat"
   // that consume all remaining words as a single prompt
   if (positionals.length > 1) opts.restArgs = positionals.slice(1);
+
+  // When stdout is piped and no explicit format flag was given, default to ndjson
+  // so pipe consumers (jq, grep, etc.) receive structured data without ANSI codes
+  if (!opts.json && !opts.ndjson && !process.stdout.isTTY) {
+    opts.ndjson = true;
+  }
 
   return opts;
 }
@@ -294,7 +307,10 @@ ${colors.bold}OPTIONS${colors.reset}
   --exclude-calendars <names> Filter: exclude these calendars
   --only-primary      Filter: only primary calendar (for chat)
   --port <number>     CDP port (default: from CDP_PORT env or 9400)
-  --json              Output as JSON
+  --json              Output as JSON array
+  --ndjson            Output as newline-delimited JSON (one object per line); for
+                      tasks --all, streams results per account as they arrive
+  --stream            Alias for --ndjson
   --help              Show this help
   --version           Show version
 
@@ -371,7 +387,9 @@ async function handleAuth(opts: CliOptions) {
 async function handleAccounts(opts: CliOptions) {
   const accounts = await listIntegrationAccounts();
 
-  if (opts.json) {
+  if (opts.ndjson) {
+    for (const acct of accounts) printNdjson(acct);
+  } else if (opts.json) {
     console.log(JSON.stringify(accounts, null, 2));
   } else {
     if (accounts.length === 0) {
@@ -381,7 +399,7 @@ async function handleAccounts(opts: CliOptions) {
       for (const acct of accounts) {
         const badge = providerBadge(acct.integrationId);
         const display = acct.providerUserDisplayName || acct.providerUserId || "";
-        console.log(`  ${badge} ${display}  ${colors.dim}${acct._id}${colors.reset}`);
+        console.log(`  ${badge} ${display}  ${colors.dim}${acct.id}${colors.reset}`);
       }
     }
   }
@@ -392,6 +410,27 @@ async function handleTasks(opts: CliOptions) {
 
   // Default: list tasks
   if (!sub || sub === "list") {
+    if (opts.ndjson) {
+      // Streaming NDJSON: emit each task as it arrives (parallel per-account)
+      const emitBatch = (tasks: MorgenTask[]) => {
+        for (const t of tasks) {
+          const out = opts.timeZone && t.due && t.timeZone
+            ? { ...t, due: convertToTimezone(t.due, t.timeZone, opts.timeZone!) }
+            : t;
+          printNdjson(out);
+        }
+      };
+
+      if (opts.account) {
+        const tasks = await listTasks({ limit: opts.limit, accountId: opts.account });
+        emitBatch(tasks);
+      } else {
+        // Parallel fetch: native + all integration accounts, emit as each responds
+        await streamTasks({ limit: opts.limit }, emitBatch);
+      }
+      return;
+    }
+
     let tasks;
     if (opts.account) {
       // Explicit account filter: query only that account
@@ -656,7 +695,9 @@ async function handleCalendar(opts: CliOptions) {
   // Default: list calendars
   if (!sub || sub === "list") {
     const calendars = await listCalendars();
-    if (opts.json) {
+    if (opts.ndjson) {
+      for (const cal of calendars) printNdjson(cal);
+    } else if (opts.json) {
       console.log(JSON.stringify(calendars, null, 2));
     } else {
       if (calendars.length === 0) {
@@ -682,6 +723,22 @@ async function handleCalendar(opts: CliOptions) {
       const startDate = new Date(opts.start);
       startDate.setDate(startDate.getDate() + 1);
       opts.end = startDate.toISOString().split("T")[0];
+    }
+
+    if (opts.ndjson) {
+      // Stream per-account: emit events as each account responds, no cross-account sort
+      await streamEvents(
+        { start: opts.start, end: opts.end, calendarIds: opts.calendars },
+        (batch) => {
+          for (const e of batch) {
+            const out = opts.timeZone && !e.showWithoutTime
+              ? { ...e, start: convertToTimezone(e.start, e.timeZone, opts.timeZone!) }
+              : e;
+            printNdjson(out);
+          }
+        }
+      );
+      return;
     }
 
     const events = await listEvents({
@@ -777,17 +834,34 @@ async function handleCalendar(opts: CliOptions) {
     if (opts.title) body.title = opts.title;
     if (opts.description) body.description = opts.description;
     if (opts.location) body.locations = [{ name: opts.location }];
-    if (opts.start) body.start = opts.start;
-    if (opts.start && opts.end) {
-      const durationMs = new Date(opts.end).getTime() - new Date(opts.start).getTime();
-      const totalMins = Math.round(durationMs / 60000);
-      const hours = Math.floor(totalMins / 60);
-      const mins = totalMins % 60;
-      body.duration = hours > 0
-        ? `PT${hours}H${mins > 0 ? mins + "M" : ""}`
-        : `PT${mins}M`;
+
+    // API requires start, duration, timeZone, showWithoutTime together
+    if (opts.start) {
+      body.start = opts.start;
+      body.timeZone = opts.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+      body.showWithoutTime = opts.allDay ?? false;
+      if (opts.end) {
+        const durationMs = new Date(opts.end).getTime() - new Date(opts.start).getTime();
+        const totalMins = Math.round(durationMs / 60000);
+        const hours = Math.floor(totalMins / 60);
+        const mins = totalMins % 60;
+        body.duration = hours > 0
+          ? `PT${hours}H${mins > 0 ? mins + "M" : ""}`
+          : `PT${mins}M`;
+      } else if (opts.duration) {
+        body.duration = opts.duration;
+      } else {
+        // Fetch existing event to preserve its duration
+        const events = await listEvents({
+          start: opts.start.split("T")[0],
+          end: opts.start.split("T")[0],
+        });
+        const existing = events.find((e) => e.id === opts.positional);
+        body.duration = existing?.duration || "PT1H";
+      }
+    } else if (opts.allDay !== undefined) {
+      body.showWithoutTime = opts.allDay;
     }
-    if (opts.allDay !== undefined) body.showWithoutTime = opts.allDay;
 
     await updateEvent(body);
     if (opts.json) {
@@ -831,7 +905,9 @@ async function handleCalendar(opts: CliOptions) {
       timeZone: opts.timeZone,
     });
 
-    if (opts.json) {
+    if (opts.ndjson) {
+      for (const slot of slots) printNdjson(slot);
+    } else if (opts.json) {
       console.log(JSON.stringify(slots, null, 2));
     } else {
       if (slots.length === 0) {
@@ -959,6 +1035,10 @@ async function main() {
   } catch (err) {
     if (err instanceof MorgenApiError) {
       error(err.message);
+      if (err.body) {
+        const detail = typeof err.body === "string" ? err.body : JSON.stringify(err.body, null, 2);
+        console.error(`${colors.dim}${detail}${colors.reset}`);
+      }
       if (err.status === 401) info("Run 'morgen auth' or set MORGEN_API_KEY.");
     } else if (err instanceof Error) {
       error(err.message);

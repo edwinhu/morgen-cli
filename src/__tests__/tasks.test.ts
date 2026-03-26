@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
   listTasks,
   listAllTasks,
+  streamTasks,
   listIntegrationAccounts,
   decodeIntegrationId,
   getTask,
@@ -17,6 +18,7 @@ describe("tasks module exports", () => {
   it("exports all expected functions", () => {
     expect(typeof listTasks).toBe("function");
     expect(typeof listAllTasks).toBe("function");
+    expect(typeof streamTasks).toBe("function");
     expect(typeof listIntegrationAccounts).toBe("function");
     expect(typeof decodeIntegrationId).toBe("function");
     expect(typeof getTask).toBe("function");
@@ -134,9 +136,9 @@ describe("tasks module behavior", () => {
     mockFetch({
       data: {
         accounts: [
-          { _id: "a1", integrationId: "googleTasks", integrationGroups: ["tasks"] },
-          { _id: "a2", integrationId: "google", integrationGroups: ["calendars"] },
-          { _id: "a3", integrationId: "microsoftToDo", integrationGroups: ["tasks"] },
+          { id: "a1", integrationId: "googleTasks", integrationGroups: ["tasks"] },
+          { id: "a2", integrationId: "google", integrationGroups: ["calendars"] },
+          { id: "a3", integrationId: "microsoftToDo", integrationGroups: ["tasks"] },
         ],
       },
     });
@@ -144,8 +146,27 @@ describe("tasks module behavior", () => {
     const accounts = await listIntegrationAccounts();
 
     expect(accounts).toHaveLength(2);
-    expect(accounts[0]._id).toBe("a1");
-    expect(accounts[1]._id).toBe("a3");
+    expect(accounts[0].id).toBe("a1");
+    expect(accounts[1].id).toBe("a3");
+  });
+
+  it("listIntegrationAccounts includes accounts when integrationGroups is absent", async () => {
+    // Real API may not return integrationGroups; default to including the account
+    mockFetch({
+      data: {
+        accounts: [
+          { id: "a1", integrationId: "googleTasks" },
+          { id: "a2", integrationId: "google", integrationGroups: ["calendars"] },
+          { id: "a3", integrationId: "microsoftToDo" },
+        ],
+      },
+    });
+
+    const accounts = await listIntegrationAccounts();
+
+    expect(accounts).toHaveLength(2);
+    expect(accounts[0].id).toBe("a1");
+    expect(accounts[1].id).toBe("a3");
   });
 
   it("propagates API errors as MorgenApiError", async () => {

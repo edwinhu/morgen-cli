@@ -21,7 +21,7 @@ import { resolve } from "path";
 import { homedir } from "os";
 
 const API_BASE = "https://api.morgen.so";
-const DEFAULT_PORT = parseInt(process.env.CDP_PORT || "9400", 10);
+const DEFAULT_PORT = parseInt(process.env.CDP_PORT || "9222", 10);
 const SESSION_FILE = resolve(homedir(), ".config", "morgen-cli", "session.json");
 
 /**

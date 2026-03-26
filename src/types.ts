@@ -92,7 +92,7 @@ export interface MorgenAccount {
 
 /** Account from /v3/integrations/accounts/list — richer than MorgenAccount */
 export interface IntegrationAccount {
-  _id: string;
+  id: string;
   integrationId: string;
   integrationGroups?: string[];
   providerUserId?: string;
