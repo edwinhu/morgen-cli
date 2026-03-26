@@ -246,7 +246,7 @@ describe("integration task close/reopen", () => {
     }
   });
 
-  it("closeTask for MS Todo sends native task ID and task list ID, not the compound Morgen ID", async () => {
+  it("closeTask for MS Todo sends the full compound Morgen ID", async () => {
     const aid = "morgen-acct-mstodo";
     const nativeTaskId = "AAMkAGQxOTk123";   // Microsoft Graph task ID
     const nativeListId = "AAMkAGQyList456";  // Microsoft Graph task list ID
@@ -260,17 +260,14 @@ describe("integration task close/reopen", () => {
 
     await closeTask(compoundId);
 
-    // Must use the native MS Graph task ID, NOT the compound Morgen ID
-    expect(captured.id).toBe(nativeTaskId);
-    expect(captured.id).not.toBe(compoundId);
-    // Must include the native task list ID — required for MS Graph /todo/lists/{listId}/tasks/{taskId}
-    expect(captured.taskListId).toBe(nativeListId);
-    // Routing fields
+    // Must send the full compound ID — server decodes it to get both task ID and list ID
+    expect(captured.id).toBe(compoundId);
+    expect(captured.taskListId).toBeUndefined();
     expect(captured.integrationId).toBe("microsoftToDo");
     expect(captured.accountId).toBe(aid);
   });
 
-  it("closeTask for Google Tasks sends native task ID and task list ID", async () => {
+  it("closeTask for Google Tasks sends the full compound Morgen ID", async () => {
     const aid = "morgen-acct-google";
     const nativeTaskId = "MDEyMzQ1Njc4OQ";    // Google Tasks task ID
     const nativeListId = "MDEyMzQ1Njc4List";  // Google Tasks tasklist ID
@@ -284,14 +281,13 @@ describe("integration task close/reopen", () => {
 
     await closeTask(compoundId);
 
-    expect(captured.id).toBe(nativeTaskId);
-    expect(captured.id).not.toBe(compoundId);
-    expect(captured.taskListId).toBe(nativeListId);
+    expect(captured.id).toBe(compoundId);
+    expect(captured.taskListId).toBeUndefined();
     expect(captured.integrationId).toBe("googleTasks");
     expect(captured.accountId).toBe(aid);
   });
 
-  it("reopenTask for MS Todo sends native task ID and task list ID", async () => {
+  it("reopenTask for MS Todo sends the full compound Morgen ID", async () => {
     const aid = "morgen-acct-mstodo";
     const nativeTaskId = "AAMkAGQxReopen";
     const nativeListId = "AAMkAGQyReopenList";
@@ -305,9 +301,8 @@ describe("integration task close/reopen", () => {
 
     await reopenTask(compoundId);
 
-    expect(captured.id).toBe(nativeTaskId);
-    expect(captured.id).not.toBe(compoundId);
-    expect(captured.taskListId).toBe(nativeListId);
+    expect(captured.id).toBe(compoundId);
+    expect(captured.taskListId).toBeUndefined();
     expect(captured.integrationId).toBe("microsoftToDo");
     expect(captured.accountId).toBe(aid);
   });

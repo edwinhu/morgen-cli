@@ -230,14 +230,13 @@ export async function closeTask(id: string, occurrenceStart?: string): Promise<v
     if (!integrationId) {
       throw new Error(`Cannot resolve integration type for account ${decoded.aid}. Run 'morgen auth' to refresh your session.`);
     }
-    // The sync service needs the native provider task ID (decoded.t), not the
-    // compound Morgen ID. For MS Todo, taskListId (decoded.tl) is also required
-    // because the Graph API path is /todo/lists/{listId}/tasks/{taskId}.
+    // Pass the full compound Morgen ID — the server decodes it internally to
+    // extract both the native task ID and task list ID (required for MS Graph).
+    // Passing decoded.t alone returns 500; the compound ID returns 204.
     await morgenFetch<void>("/tasks/close", {
       method: "POST",
       body: {
-        id: decoded.t,
-        taskListId: decoded.tl,
+        id,
         integrationId,
         accountId: decoded.aid,
         ...(occurrenceStart ? { occurrenceStart } : {}),
@@ -258,12 +257,11 @@ export async function reopenTask(id: string, occurrenceStart?: string): Promise<
     if (!integrationId) {
       throw new Error(`Cannot resolve integration type for account ${decoded.aid}. Run 'morgen auth' to refresh your session.`);
     }
-    // Same fix as closeTask: native provider IDs, not the compound Morgen ID.
+    // Same fix as closeTask: pass the full compound Morgen ID.
     await morgenFetch<void>("/tasks/reopen", {
       method: "POST",
       body: {
-        id: decoded.t,
-        taskListId: decoded.tl,
+        id,
         integrationId,
         accountId: decoded.aid,
         ...(occurrenceStart ? { occurrenceStart } : {}),

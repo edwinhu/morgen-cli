@@ -105,5 +105,70 @@ Last updated: 2026-02-11 20:37
 
 [Compaction at 21:19] (workflow: /dev) - Context was summarized
 ---
-Last updated: 2026-03-26 10:34
+Last updated: 2026-03-26 12:16
 ---
+
+[Compaction at 12:31] (workflow: /dev) - Context was summarized
+---
+Last updated: 2026-03-26 13:03
+---
+
+## Morgen API: Integration Task Close/Reopen (2026-03-26)
+
+### The Bug
+`/v3/tasks/close` and `/v3/tasks/reopen` return **500** when called with the raw provider task ID
+(`decoded.t`). The Morgen backend removed `taskListId` from the DTO whitelist (returns 400 if
+sent), but the sync service still needs the task list ID to build the MS Graph URL
+`/me/todo/lists/{listId}/tasks/{taskId}`.
+
+### The Fix
+Send the **full compound Morgen ID** (the base64 `{aid, t, tl}` blob) as the `id` field.
+The server decodes it internally to extract both the task ID and task list ID. Returns 204.
+
+```typescript
+// WRONG — 500 from sync service
+body: { id: decoded.t, integrationId, accountId: decoded.aid }
+
+// CORRECT — 204 success
+body: { id, integrationId, accountId: decoded.aid }  // id = the original compound ID
+```
+
+### How It Was Discovered
+- Reverse-engineered the Morgen Electron app via CDP (port 9224, `--remote-debugging-port=9224`)
+- Monitored Network events during a real task close
+- Electron app sends compound ID; web app sends `providerId` (broken, returns 500 silently)
+- Web app hides the 500 with optimistic UI — tasks appear closed but aren't in MS To Do
+
+### Recurring Tasks
+Recurring tasks (recurrence: true) create a new occurrence on close. The task remains visible
+with `needs-action` but with the next due date. This is correct MS To Do behavior — not a bug.
+
+### How to Debug Morgen API Calls
+```bash
+# Launch Electron app with CDP
+/Applications/Morgen.app/Contents/MacOS/Morgen --remote-debugging-port=9224 &
+
+# List targets
+curl -s http://localhost:9224/json/list | python3 -m json.tool
+
+# Monitor all morgen network traffic via node CDP client
+node -e "
+const CDP = require('chrome-remote-interface');
+(async () => {
+  const client = await CDP({ host: 'localhost', port: 9224, target: '<page-id>' });
+  await client.Network.enable();
+  client.Network.requestWillBeSent(({request}) => {
+    if (request.url.includes('morgen')) {
+      console.log(request.method, request.url);
+      if (request.postData) console.log(request.postData);
+    }
+  });
+  await new Promise(r => setTimeout(r, 60000));
+})();
+"
+```
+---
+Last updated: 2026-03-26 13:05
+---
+
+[Compaction at 13:05] (workflow: /dev) - Context was summarized
