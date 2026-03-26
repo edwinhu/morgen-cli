@@ -7,7 +7,7 @@
  *   - Session token (from CDP auth) — full CRUD including integration tasks
  */
 
-import { loadSession } from "./morgen-cdp";
+import { loadSession, authenticate } from "./morgen-cdp";
 
 const BASE_URL = "https://api.morgen.so/v3";
 
@@ -50,6 +50,7 @@ export async function morgenFetch<T>(
     method?: "GET" | "POST";
     body?: unknown;
     params?: Record<string, string>;
+    noRetry?: boolean;
   }
 ): Promise<T> {
   const authHeader = await getAuthHeader();
@@ -81,12 +82,18 @@ export async function morgenFetch<T>(
       body = await response.text().catch(() => null);
     }
 
-    if (response.status === 401) {
-      throw new MorgenApiError(
-        "Authentication failed. Run 'morgen auth' or check MORGEN_API_KEY.",
-        401,
-        body
-      );
+    if (response.status === 401 && !options?.noRetry) {
+      // Auto-refresh: try re-authenticating via CDP, then retry once
+      try {
+        await authenticate();
+        return morgenFetch<T>(path, { ...options, noRetry: true });
+      } catch {
+        throw new MorgenApiError(
+          "Authentication failed. Run 'morgen auth' or check MORGEN_API_KEY.",
+          401,
+          body
+        );
+      }
     }
     if (response.status === 429) {
       throw new MorgenApiError(
