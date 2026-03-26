@@ -12,6 +12,7 @@ import {
   reopenTask,
   deleteTask,
   moveTask,
+  resetAccountsCache,
 } from "../tasks";
 
 describe("tasks module exports", () => {
@@ -190,5 +191,157 @@ describe("tasks module behavior", () => {
         expect(err.status).toBe(404);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration task close / reopen — MS Todo and Google Tasks
+// ---------------------------------------------------------------------------
+
+describe("integration task close/reopen", () => {
+  const originalEnv = process.env.MORGEN_API_KEY;
+  const originalFetch = globalThis.fetch;
+
+  /** Encode a compound Morgen integration task ID */
+  function makeCompoundId(aid: string, t: string, tl: string): string {
+    return btoa(JSON.stringify({ aid, t, tl }));
+  }
+
+  /**
+   * Build a fetch mock that dispatches by URL substring.
+   * Captures the last close/reopen request body for inspection.
+   */
+  function mockDispatch(
+    accounts: Array<{ id: string; integrationId: string }>,
+    onCloseReopen: (body: Record<string, unknown>) => void
+  ) {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/integrations/accounts/list")) {
+        return new Response(
+          JSON.stringify({ data: { accounts } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (url.includes("/tasks/close") || url.includes("/tasks/reopen")) {
+        onCloseReopen(JSON.parse(init?.body as string));
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`Unexpected URL in test: ${url}`);
+    }) as typeof fetch;
+  }
+
+  beforeEach(() => {
+    process.env.MORGEN_API_KEY = "test-api-key-12345";
+    resetAccountsCache(); // prevent stale account cache from leaking between tests
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    resetAccountsCache();
+    if (originalEnv) {
+      process.env.MORGEN_API_KEY = originalEnv;
+    } else {
+      delete process.env.MORGEN_API_KEY;
+    }
+  });
+
+  it("closeTask for MS Todo sends native task ID and task list ID, not the compound Morgen ID", async () => {
+    const aid = "morgen-acct-mstodo";
+    const nativeTaskId = "AAMkAGQxOTk123";   // Microsoft Graph task ID
+    const nativeListId = "AAMkAGQyList456";  // Microsoft Graph task list ID
+    const compoundId = makeCompoundId(aid, nativeTaskId, nativeListId);
+    let captured: Record<string, unknown> = {};
+
+    mockDispatch(
+      [{ id: aid, integrationId: "microsoftToDo" }],
+      (body) => { captured = body; }
+    );
+
+    await closeTask(compoundId);
+
+    // Must use the native MS Graph task ID, NOT the compound Morgen ID
+    expect(captured.id).toBe(nativeTaskId);
+    expect(captured.id).not.toBe(compoundId);
+    // Must include the native task list ID — required for MS Graph /todo/lists/{listId}/tasks/{taskId}
+    expect(captured.taskListId).toBe(nativeListId);
+    // Routing fields
+    expect(captured.integrationId).toBe("microsoftToDo");
+    expect(captured.accountId).toBe(aid);
+  });
+
+  it("closeTask for Google Tasks sends native task ID and task list ID", async () => {
+    const aid = "morgen-acct-google";
+    const nativeTaskId = "MDEyMzQ1Njc4OQ";    // Google Tasks task ID
+    const nativeListId = "MDEyMzQ1Njc4List";  // Google Tasks tasklist ID
+    const compoundId = makeCompoundId(aid, nativeTaskId, nativeListId);
+    let captured: Record<string, unknown> = {};
+
+    mockDispatch(
+      [{ id: aid, integrationId: "googleTasks" }],
+      (body) => { captured = body; }
+    );
+
+    await closeTask(compoundId);
+
+    expect(captured.id).toBe(nativeTaskId);
+    expect(captured.id).not.toBe(compoundId);
+    expect(captured.taskListId).toBe(nativeListId);
+    expect(captured.integrationId).toBe("googleTasks");
+    expect(captured.accountId).toBe(aid);
+  });
+
+  it("reopenTask for MS Todo sends native task ID and task list ID", async () => {
+    const aid = "morgen-acct-mstodo";
+    const nativeTaskId = "AAMkAGQxReopen";
+    const nativeListId = "AAMkAGQyReopenList";
+    const compoundId = makeCompoundId(aid, nativeTaskId, nativeListId);
+    let captured: Record<string, unknown> = {};
+
+    mockDispatch(
+      [{ id: aid, integrationId: "microsoftToDo" }],
+      (body) => { captured = body; }
+    );
+
+    await reopenTask(compoundId);
+
+    expect(captured.id).toBe(nativeTaskId);
+    expect(captured.id).not.toBe(compoundId);
+    expect(captured.taskListId).toBe(nativeListId);
+    expect(captured.integrationId).toBe("microsoftToDo");
+    expect(captured.accountId).toBe(aid);
+  });
+
+  it("closeTask for native Morgen task sends id directly without taskListId", async () => {
+    // Plain non-base64 task IDs are native Morgen tasks — no integration routing needed
+    let captured: Record<string, unknown> = {};
+
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      captured = JSON.parse(init?.body as string);
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+
+    await closeTask("native-task-id-xyz");
+
+    expect(captured.id).toBe("native-task-id-xyz");
+    expect(captured.taskListId).toBeUndefined();
+    expect(captured.integrationId).toBeUndefined();
+    expect(captured.accountId).toBeUndefined();
+  });
+
+  it("closeTask throws a clear error when integrationId cannot be resolved", async () => {
+    const compoundId = makeCompoundId("unknown-acct", "task-t", "list-tl");
+
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      if (String(input).includes("/integrations/accounts/list")) {
+        return new Response(JSON.stringify({ data: { accounts: [] } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected URL: ${String(input)}`);
+    }) as typeof fetch;
+
+    await expect(closeTask(compoundId)).rejects.toThrow("Cannot resolve integration type");
   });
 });
