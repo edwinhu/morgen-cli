@@ -367,12 +367,14 @@ ${colors.bold}ENVIRONMENT${colors.reset}
 async function handleAuth(opts: CliOptions) {
   try {
     const result = await authenticate(opts.port);
-    if (opts.json) {
-      console.log(JSON.stringify({
+    if (opts.json || opts.ndjson) {
+      const out = {
         email: result.email,
         expiresAt: new Date(result.expiresAt).toISOString(),
         source: result.source,
-      }));
+      };
+      if (opts.ndjson) printNdjson(out);
+      else console.log(JSON.stringify(out));
     } else {
       const sourceLabel = result.source === "electron" ? "Morgen app" : "Chrome browser";
       success(`Authenticated as ${result.email} (via ${sourceLabel})`);
@@ -458,11 +460,13 @@ async function handleTasks(opts: CliOptions) {
       process.exit(1);
     }
     const task = await getTask(opts.positional);
-    if (opts.json) {
-      const output = opts.timeZone && task.due && task.timeZone
-        ? { ...task, due: convertToTimezone(task.due, task.timeZone, opts.timeZone) }
-        : task;
-      console.log(JSON.stringify(output, null, 2));
+    const taskOutput = opts.timeZone && task.due && task.timeZone
+      ? { ...task, due: convertToTimezone(task.due, task.timeZone, opts.timeZone) }
+      : task;
+    if (opts.ndjson) {
+      printNdjson(taskOutput);
+    } else if (opts.json) {
+      console.log(JSON.stringify(taskOutput, null, 2));
     } else {
       console.log(formatTask(task, opts.timeZone));
       if (task.description) console.log(`\n${task.description}`);
@@ -497,7 +501,9 @@ async function handleTasks(opts: CliOptions) {
       ...(opts.tags ? { tags: opts.tags } : {}),
     };
     const id = await createTask(input);
-    if (opts.json) {
+    if (opts.ndjson) {
+      printNdjson({ id });
+    } else if (opts.json) {
       console.log(JSON.stringify({ id }));
     } else {
       success(`Task created: ${id}`);
@@ -534,7 +540,9 @@ async function handleTasks(opts: CliOptions) {
       ...(opts.tags ? { tags: opts.tags } : {}),
     };
     await updateTask(input);
-    if (opts.json) {
+    if (opts.ndjson) {
+      printNdjson({ success: true });
+    } else if (opts.json) {
       console.log(JSON.stringify({ success: true }));
     } else {
       success("Task updated");
@@ -548,7 +556,9 @@ async function handleTasks(opts: CliOptions) {
       process.exit(1);
     }
     await closeTask(opts.positional);
-    if (opts.json) {
+    if (opts.ndjson) {
+      printNdjson({ success: true });
+    } else if (opts.json) {
       console.log(JSON.stringify({ success: true }));
     } else {
       success("Task closed");
@@ -562,7 +572,9 @@ async function handleTasks(opts: CliOptions) {
       process.exit(1);
     }
     await reopenTask(opts.positional);
-    if (opts.json) {
+    if (opts.ndjson) {
+      printNdjson({ success: true });
+    } else if (opts.json) {
       console.log(JSON.stringify({ success: true }));
     } else {
       success("Task reopened");
@@ -576,7 +588,9 @@ async function handleTasks(opts: CliOptions) {
       process.exit(1);
     }
     await deleteTask(opts.positional);
-    if (opts.json) {
+    if (opts.ndjson) {
+      printNdjson({ success: true });
+    } else if (opts.json) {
       console.log(JSON.stringify({ success: true }));
     } else {
       success("Task deleted");
@@ -590,7 +604,9 @@ async function handleTasks(opts: CliOptions) {
       process.exit(1);
     }
     await moveTask(opts.positional, opts.after, opts.parent);
-    if (opts.json) {
+    if (opts.ndjson) {
+      printNdjson({ success: true });
+    } else if (opts.json) {
       console.log(JSON.stringify({ success: true }));
     } else {
       success("Task moved");
@@ -644,7 +660,9 @@ async function handleTasks(opts: CliOptions) {
       },
     });
 
-    if (opts.json) {
+    if (opts.ndjson) {
+      printNdjson({ eventId, taskId: task.id, calendar: cal.name });
+    } else if (opts.json) {
       console.log(JSON.stringify({ eventId, taskId: task.id, calendar: cal.name }));
     } else {
       success(`Task "${task.title}" scheduled on "${cal.name}"`);
@@ -816,7 +834,9 @@ async function handleCalendar(opts: CliOptions) {
       ...(opts.description ? { description: opts.description } : {}),
     });
 
-    if (opts.json) {
+    if (opts.ndjson) {
+      printNdjson({ id });
+    } else if (opts.json) {
       console.log(JSON.stringify({ id }));
     } else {
       success(`Event created: ${id}`);
@@ -864,7 +884,9 @@ async function handleCalendar(opts: CliOptions) {
     }
 
     await updateEvent(body);
-    if (opts.json) {
+    if (opts.ndjson) {
+      printNdjson({ success: true });
+    } else if (opts.json) {
       console.log(JSON.stringify({ success: true }));
     } else {
       success("Event updated");
@@ -878,7 +900,9 @@ async function handleCalendar(opts: CliOptions) {
       process.exit(1);
     }
     await deleteEvent(opts.positional);
-    if (opts.json) {
+    if (opts.ndjson) {
+      printNdjson({ success: true });
+    } else if (opts.json) {
       console.log(JSON.stringify({ success: true }));
     } else {
       success("Event deleted");
@@ -982,7 +1006,13 @@ async function handleChat(opts: CliOptions) {
     calendarFilter = { calendarIds: filtered.map((c) => c.id) };
   }
 
-  if (opts.json) {
+  if (opts.ndjson) {
+    await sendChat(prompt, {
+      onToken: (text: string) => printNdjson({ type: "token", text }),
+      onToolCall: (name: string, args: string) => printNdjson({ type: "tool_call", name, args }),
+      calendarFilter,
+    });
+  } else if (opts.json) {
     const result = await sendChat(prompt, { calendarFilter });
     console.log(JSON.stringify(result, null, 2));
   } else {

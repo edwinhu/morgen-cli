@@ -102,6 +102,37 @@ morgen --json <any command>           # JSON output
 morgen --help                         # Full help
 ```
 
+## Output Formats
+
+```bash
+morgen tasks --all              # TTY: human-readable lines with colored status
+morgen tasks --all --json       # Full JSON array
+morgen tasks --all --ndjson     # One JSON object per line (streaming)
+```
+
+**Auto-detection:** When stdout is piped (not a TTY), the CLI auto-defaults to NDJSON. To force human-readable output in scripts, pipe through `cat` or use `--json` and parse.
+
+## Closing Integration Tasks (Google Tasks, MS To Do)
+
+Integration task IDs are base64-encoded JSON strings (very long). To close one:
+
+```bash
+# 1. List tasks as JSON and extract the ID
+TASK_ID=$(morgen tasks --all --json | python3 -c "
+import sys, json
+tasks = json.load(sys.stdin)
+for t in tasks:
+    if 'keyword' in t.get('title','').lower() and t['progress'] != 'completed':
+        print(t['id'])
+        break
+")
+
+# 2. Close it (the ID must be passed exactly — no truncation)
+morgen tasks close "$TASK_ID"
+```
+
+The `id` field is the only identifier `tasks close` accepts. Do NOT use `legacyId`.
+
 ## Common Workflows
 
 ### Task Management
@@ -111,7 +142,7 @@ morgen --help                         # Full help
 morgen tasks create --title "Review PR" --due 2026-02-12
 morgen tasks schedule <task-id> --start 2026-02-11T14:00:00
 
-# Complete a task
+# Complete a task (use exact id from tasks list)
 morgen tasks close <task-id>
 
 # List all tasks including integrations
