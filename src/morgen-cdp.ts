@@ -176,6 +176,26 @@ export async function loadSession(): Promise<SessionInfo | null> {
 }
 
 /**
+ * Refresh session using stored credentials (no CDP required).
+ * Used on 401 to try token refresh before falling back to CDP.
+ * Throws if no stored session or refresh fails.
+ */
+export async function refreshSession(): Promise<SessionInfo> {
+  const file = Bun.file(SESSION_FILE);
+  if (!(await file.exists())) {
+    throw new Error("No stored session to refresh");
+  }
+  const session: SessionInfo = await file.json();
+  if (!session.refreshToken || !session.deviceId) {
+    throw new Error("Stored session missing refreshToken or deviceId");
+  }
+  const refreshed = await exchangeForSession(session.refreshToken, session.deviceId);
+  refreshed.source = session.source;
+  await saveSession(refreshed);
+  return refreshed;
+}
+
+/**
  * Get a valid session token. Tries cached session first,
  * then extracts from running Morgen app or Chrome browser.
  */

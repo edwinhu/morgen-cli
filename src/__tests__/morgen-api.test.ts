@@ -6,6 +6,7 @@ mock.module("../morgen-cdp", () => ({
   saveSession: async () => {},
   isMorgenRunning: async () => false,
   authenticate: async () => ({ email: "", expiresAt: 0, source: "electron" }),
+  refreshSession: async () => { throw new Error("no stored session"); },
   getSessionToken: async () => "",
 }));
 
