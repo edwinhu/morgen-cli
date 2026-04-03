@@ -96,7 +96,7 @@ interface CliOptions {
   attendees?: string;
   allDay?: boolean;
   minMinutes?: number;
-  // Chat calendar filtering
+  // Calendar filtering (applies to calendar events/free/list and chat)
   calendars?: string[];
   excludeCalendars?: string[];
   onlyPrimary?: boolean;
@@ -303,8 +303,8 @@ ${colors.bold}OPTIONS${colors.reset}
   --attendees <emails> Comma-separated attendee emails
   --all-day           Create an all-day event
   --min-minutes <n>   Minimum free slot duration (default: 30)
-  --calendars <names> Filter: only include these calendars (for chat/free)
-  --exclude-calendars <names> Filter: exclude these calendars
+  --calendars <names> Filter: only include these calendars (partial name match)
+  --exclude-calendars <names> Filter: exclude these calendars (partial name match)
   --only-primary      Filter: only primary calendar (for chat)
   --port <number>     CDP port (default: from CDP_PORT env or 9400)
   --json              Output as JSON array
@@ -705,6 +705,44 @@ function formatEvent(event: MorgenEvent & { calendarName?: string }, targetTz?: 
 }
 
 // ---------------------------------------------------------------------------
+// Calendar filtering helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve --calendars / --exclude-calendars name filters to calendar IDs.
+ * Returns undefined if no filters are active (meaning "all calendars").
+ */
+async function resolveCalendarFilter(opts: CliOptions): Promise<string[] | undefined> {
+  if (!opts.calendars && !opts.excludeCalendars) return undefined;
+
+  const allCals = await listCalendars();
+  let filtered = allCals;
+
+  if (opts.calendars) {
+    filtered = filtered.filter((c) =>
+      opts.calendars!.some((name) =>
+        c.name.toLowerCase().includes(name.toLowerCase())
+      )
+    );
+  }
+
+  if (opts.excludeCalendars) {
+    filtered = filtered.filter((c) =>
+      !opts.excludeCalendars!.some((name) =>
+        c.name.toLowerCase().includes(name.toLowerCase())
+      )
+    );
+  }
+
+  if (filtered.length === 0) {
+    error("No calendars matched the filter. Check --calendars / --exclude-calendars names.");
+    process.exit(1);
+  }
+
+  return filtered.map((c) => c.id);
+}
+
+// ---------------------------------------------------------------------------
 // Calendar handler
 // ---------------------------------------------------------------------------
 async function handleCalendar(opts: CliOptions) {
@@ -712,7 +750,24 @@ async function handleCalendar(opts: CliOptions) {
 
   // Default: list calendars
   if (!sub || sub === "list") {
-    const calendars = await listCalendars();
+    let calendars = await listCalendars();
+
+    // Apply name-based filters to list output too
+    if (opts.calendars) {
+      calendars = calendars.filter((c) =>
+        opts.calendars!.some((name) =>
+          c.name.toLowerCase().includes(name.toLowerCase())
+        )
+      );
+    }
+    if (opts.excludeCalendars) {
+      calendars = calendars.filter((c) =>
+        !opts.excludeCalendars!.some((name) =>
+          c.name.toLowerCase().includes(name.toLowerCase())
+        )
+      );
+    }
+
     if (opts.ndjson) {
       for (const cal of calendars) printNdjson(cal);
     } else if (opts.json) {
@@ -743,10 +798,12 @@ async function handleCalendar(opts: CliOptions) {
       opts.end = startDate.toISOString().split("T")[0];
     }
 
+    const calendarIds = await resolveCalendarFilter(opts);
+
     if (opts.ndjson) {
       // Stream per-account: emit events as each account responds, no cross-account sort
       await streamEvents(
-        { start: opts.start, end: opts.end, calendarIds: opts.calendars },
+        { start: opts.start, end: opts.end, calendarIds },
         (batch) => {
           for (const e of batch) {
             const out = opts.timeZone && !e.showWithoutTime
@@ -762,7 +819,7 @@ async function handleCalendar(opts: CliOptions) {
     const events = await listEvents({
       start: opts.start,
       end: opts.end,
-      calendarIds: opts.calendars,
+      calendarIds,
     });
 
     if (opts.json) {
@@ -921,10 +978,11 @@ async function handleCalendar(opts: CliOptions) {
       opts.end = startDate.toISOString();
     }
 
+    const calendarIds = await resolveCalendarFilter(opts);
     const slots = await findFreeSlots({
       start: opts.start,
       end: opts.end,
-      calendarIds: opts.calendars,
+      calendarIds,
       minMinutes: opts.minMinutes,
       timeZone: opts.timeZone,
     });
@@ -974,36 +1032,20 @@ async function handleChat(opts: CliOptions) {
   // Resolve calendar filters to IDs
   let calendarFilter: import("./chat").CalendarFilter | undefined;
   if (opts.calendars || opts.excludeCalendars || opts.onlyPrimary) {
-    const allCals = await listCalendars();
-    let filtered = allCals;
-
     if (opts.onlyPrimary) {
-      // Use only the first writable calendar as "primary"
+      const allCals = await listCalendars();
       const primary = allCals.find((c) => c.myRights?.mayWrite || c.myRights?.mayWriteAll);
-      filtered = primary ? [primary] : [];
-    } else if (opts.calendars) {
-      // Include only calendars whose name matches (case-insensitive partial match)
-      filtered = allCals.filter((c) =>
-        opts.calendars!.some((name) =>
-          c.name.toLowerCase().includes(name.toLowerCase())
-        )
-      );
+      if (!primary) {
+        error("No writable (primary) calendar found.");
+        process.exit(1);
+      }
+      calendarFilter = { calendarIds: [primary.id] };
+    } else {
+      const calendarIds = await resolveCalendarFilter(opts);
+      if (calendarIds) {
+        calendarFilter = { calendarIds };
+      }
     }
-
-    if (opts.excludeCalendars) {
-      filtered = filtered.filter((c) =>
-        !opts.excludeCalendars!.some((name) =>
-          c.name.toLowerCase().includes(name.toLowerCase())
-        )
-      );
-    }
-
-    if (filtered.length === 0) {
-      error("No calendars matched the filter. Check --calendars / --exclude-calendars names.");
-      process.exit(1);
-    }
-
-    calendarFilter = { calendarIds: filtered.map((c) => c.id) };
   }
 
   if (opts.ndjson) {

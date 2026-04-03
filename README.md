@@ -55,7 +55,15 @@ morgen calendar delete <event-id>
 morgen calendar free --start 2026-02-10T09:00:00 --end 2026-02-10T17:00:00
 ```
 
-Options: `--calendar-id`, `--start`, `--end`, `--timezone`, `--location`, `--attendees`, `--all-day`, `--min-minutes`
+Options: `--calendar-id`, `--start`, `--end`, `--timezone`, `--location`, `--attendees`, `--all-day`, `--min-minutes`, `--calendars`, `--exclude-calendars`
+
+**Calendar filtering** works on all calendar commands:
+
+```bash
+morgen calendar --exclude-calendars rjj6        # Hide a calendar from listing
+morgen calendar events --exclude-calendars rjj6 # Exclude from event listings
+morgen calendar free --exclude-calendars rjj6   # Exclude from free time search
+```
 
 ### AI Chat
 
