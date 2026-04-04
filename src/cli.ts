@@ -306,7 +306,7 @@ ${colors.bold}OPTIONS${colors.reset}
   --calendars <names> Filter: only include these calendars (partial name match)
   --exclude-calendars <names> Filter: exclude these calendars (partial name match)
   --only-primary      Filter: only primary calendar (for chat)
-  --port <number>     CDP port (default: from CDP_PORT env or 9400)
+  --port <number>     CDP port (default: from CDP_PORT env or 9250)
   --json              Output as JSON array
   --ndjson            Output as newline-delimited JSON (one object per line); for
                       tasks --all, streams results per account as they arrive
@@ -315,13 +315,10 @@ ${colors.bold}OPTIONS${colors.reset}
   --version           Show version
 
 ${colors.bold}AUTH${colors.reset}
-  Two auth paths (tried in order):
-    1. Morgen desktop app (Electron) — run with:
-       /Applications/Morgen.app/Contents/MacOS/Morgen --remote-debugging-port=9400
-    2. Chrome browser with app.morgen.so open — run with:
-       nanoclaw-chrome start
+  Connects to Chrome via CDP (port 9250 by default) and finds the Morgen tab
+  (app.morgen.so) to extract auth tokens.
 
-  Use --port to specify the CDP port (default: 9400 or CDP_PORT env).
+  Use --port to specify the CDP port (default: 9250 or CDP_PORT env).
   Session tokens are cached in ~/.config/morgen-cli/session.json.
   Alternatively, set MORGEN_API_KEY for basic read + Morgen-native CRUD.
 

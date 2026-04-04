@@ -1,18 +1,14 @@
 /**
  * Morgen CDP Module
  *
- * Connects to the running Morgen Electron app or Chrome browser via Chrome
- * DevTools Protocol to extract authentication credentials. The session token
- * enables full integration task CRUD through the Morgen API.
- *
- * Auth discovery order:
- *   1. Morgen Electron app (title "Morgen Calendar")
- *   2. Chrome browser with app.morgen.so open
+ * Connects to Chrome browser (with app.morgen.so open) via Chrome DevTools
+ * Protocol to extract authentication credentials. The session token enables
+ * full integration task CRUD through the Morgen API.
  *
  * Flow:
- *   1. Connect via CDP to Electron or Chrome
- *   2. Read morgen-refresh-token from renderer localStorage
- *   3. Read morgen-device-id from electronAPI.localStorage (Electron) or localStorage (Chrome)
+ *   1. Connect via CDP to Chrome (port 9250 by default)
+ *   2. Find the morgen.so tab
+ *   3. Read morgen-refresh-token and morgen-device-id from localStorage
  *   4. Exchange via POST /identity/refresh → session token (1h TTL)
  */
 
@@ -21,7 +17,7 @@ import { resolve } from "path";
 import { homedir } from "os";
 
 const API_BASE = "https://api.morgen.so";
-const DEFAULT_PORT = parseInt(process.env.CDP_PORT || "9222", 10);
+const DEFAULT_PORT = parseInt(process.env.CDP_PORT || "9250", 10);
 const SESSION_FILE = resolve(homedir(), ".config", "morgen-cli", "session.json");
 
 /**
@@ -42,12 +38,11 @@ export interface SessionInfo {
   source?: ConnectionSource; // "electron" or "chrome"
 }
 
-/** Check if Morgen is reachable via CDP. Returns connection source or false. */
+/** Check if Morgen is reachable via CDP (Chrome with morgen.so tab). */
 export async function isMorgenRunning(port = DEFAULT_PORT): Promise<ConnectionSource | false> {
   try {
     const host = getCDPHost();
     const targets = await CDP.List({ host, port });
-    if (targets.some((t: any) => t.title === "Morgen Calendar")) return "electron";
     if (targets.some((t: any) => t.type === "page" && t.url?.includes("morgen.so"))) return "chrome";
     return false;
   } catch {
@@ -56,23 +51,13 @@ export async function isMorgenRunning(port = DEFAULT_PORT): Promise<ConnectionSo
 }
 
 /**
- * Connect to Morgen via CDP. Tries Electron app first, then Chrome browser.
+ * Connect to Morgen via CDP. Finds the morgen.so tab in Chrome.
  * Returns the connection source and CDP client.
  */
 async function connectToMorgen(port: number): Promise<{ source: ConnectionSource; client: CDP.Client }> {
   const host = getCDPHost();
   const targets = await CDP.List({ host, port });
 
-  // Try Electron app first (specific window title)
-  const electronTarget = targets.find((t: any) =>
-    t.type === "page" && t.title === "Morgen Calendar"
-  );
-  if (electronTarget) {
-    const client = await CDP({ host, port, target: electronTarget });
-    return { source: "electron", client };
-  }
-
-  // Fall back to Chrome (any page with morgen.so URL)
   const chromeTarget = targets.find((t: any) =>
     t.type === "page" && t.url?.includes("morgen.so")
   );
@@ -83,9 +68,8 @@ async function connectToMorgen(port: number): Promise<{ source: ConnectionSource
 
   throw new Error(
     `No Morgen target found on port ${port}.\n` +
-    "Start one of:\n" +
-    "  Chrome:   nanoclaw-chrome start\n" +
-    "  Electron: /Applications/Morgen.app/Contents/MacOS/Morgen --remote-debugging-port=" + port
+    "Ensure Chrome is running with --remote-debugging-port=" + port +
+    " and app.morgen.so is open."
   );
 }
 
@@ -100,9 +84,7 @@ async function extractCredentialsFromClient(client: CDP.Client): Promise<{
     expression: `
       (async () => {
         const refreshToken = localStorage.getItem("morgen-refresh-token");
-        const deviceId = window.electronAPI
-          ? await window.electronAPI.localStorage.get("morgen-device-id")
-          : localStorage.getItem("morgen-device-id");
+        const deviceId = localStorage.getItem("morgen-device-id");
         return JSON.stringify({ refreshToken, deviceId });
       })()
     `,
