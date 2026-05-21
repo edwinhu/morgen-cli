@@ -15,7 +15,6 @@ import {
   reopenTask,
   deleteTask,
   moveTask,
-  decodeIntegrationId,
 } from "./tasks";
 import {
   listCalendars,
@@ -618,12 +617,6 @@ async function handleTasks(opts: CliOptions) {
     }
     if (!opts.start) {
       error("--start is required for scheduling a task");
-      process.exit(1);
-    }
-
-    // Integration tasks can't be scheduled
-    if (decodeIntegrationId(opts.positional)) {
-      error("Only Morgen-native tasks can be scheduled. Integration tasks are not supported.");
       process.exit(1);
     }
 

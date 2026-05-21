@@ -41,7 +41,7 @@ morgen tasks schedule <id> --start 2026-02-10T10:00:00  # Schedule on calendar
 
 Options: `--title`, `--description`, `--due`, `--duration`, `--priority` (1-9), `--tags`, `--list`, `--calendar-id`
 
-> `tasks schedule` creates a linked task-event on the calendar. The task shows as scheduled in Morgen and can be completed directly from the calendar.
+> `tasks schedule` creates a linked task-event on the calendar. Works for both Morgen-native tasks and integration tasks (Google Tasks, MS To Do). Integration-linked events are completed from the source app, not the calendar.
 
 ### Calendar
 

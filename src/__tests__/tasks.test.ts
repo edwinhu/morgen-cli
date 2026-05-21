@@ -133,6 +133,79 @@ describe("tasks module behavior", () => {
     expect(tasks).toEqual([{ id: "int-1", title: "Integration task" }]);
   });
 
+  it("getTask returns task directly when /tasks?id= populates it (native ID)", async () => {
+    mockFetch({ data: { task: { id: "native-1", title: "Native task" }, labelDefs: [] } });
+
+    const task = await getTask("native-1");
+
+    expect(lastRequest!.url).toContain("/v3/tasks?");
+    expect(lastRequest!.url).toContain("id=native-1");
+    expect(task).toEqual({ id: "native-1", title: "Native task" } as any);
+  });
+
+  it("getTask falls back to listing by accountId for integration IDs when /tasks returns null", async () => {
+    const aid = "acct-int-1";
+    const compoundId = btoa(JSON.stringify({ aid, t: "t-1", tl: "tl-1" }));
+    const calls: string[] = [];
+
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes("/v3/tasks?") && url.includes(`id=${encodeURIComponent(compoundId)}`)) {
+        return new Response(
+          JSON.stringify({ data: { task: null, labelDefs: [] } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (url.includes("/v3/tasks/list") && url.includes(`accountId=${aid}`)) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              tasks: [
+                { id: "other-id", title: "Other task" },
+                { id: compoundId, title: "put out the trash" },
+              ],
+              labelDefs: [],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    }) as typeof fetch;
+
+    const task = await getTask(compoundId);
+
+    expect(task.title).toBe("put out the trash");
+    expect(calls[0]).toContain("/v3/tasks?");
+    expect(calls[1]).toContain("/v3/tasks/list");
+    expect(calls[1]).toContain(`accountId=${aid}`);
+  });
+
+  it("getTask throws when neither /tasks nor account listing finds the task", async () => {
+    const aid = "acct-missing";
+    const compoundId = btoa(JSON.stringify({ aid, t: "t-x", tl: "tl-x" }));
+
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/v3/tasks?")) {
+        return new Response(
+          JSON.stringify({ data: { task: null, labelDefs: [] } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (url.includes("/v3/tasks/list")) {
+        return new Response(
+          JSON.stringify({ data: { tasks: [], labelDefs: [] } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    }) as typeof fetch;
+
+    await expect(getTask(compoundId)).rejects.toThrow(`Task not found: ${compoundId}`);
+  });
+
   it("listIntegrationAccounts filters to task accounts", async () => {
     mockFetch({
       data: {

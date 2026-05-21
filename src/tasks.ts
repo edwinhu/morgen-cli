@@ -192,10 +192,21 @@ export async function streamTasks(
 // ---------------------------------------------------------------------------
 
 export async function getTask(id: string): Promise<MorgenTask> {
-  const response = await morgenFetch<{ data: { task: MorgenTask } }>("/tasks", {
+  const response = await morgenFetch<{ data: { task: MorgenTask | null } }>("/tasks", {
     params: { id },
   });
-  return response.data.task;
+  if (response.data.task) return response.data.task;
+
+  // Fallback: integration tasks aren't returned by /tasks?id=. Decode the
+  // compound ID, list tasks on the matching account, and find by ID.
+  const decoded = decodeIntegrationId(id);
+  if (decoded) {
+    const tasks = await listTasks({ accountId: decoded.aid });
+    const match = tasks.find((t) => t.id === id);
+    if (match) return match;
+  }
+
+  throw new Error(`Task not found: ${id}`);
 }
 
 // ---------------------------------------------------------------------------
