@@ -6,7 +6,7 @@
  * full integration task CRUD through the Morgen API.
  *
  * Flow:
- *   1. Connect via CDP to Chrome (port 9250 by default)
+ *   1. Connect via CDP to Chrome (port 9253 by default)
  *   2. Find the morgen.so tab
  *   3. Read morgen-refresh-token and morgen-device-id from localStorage
  *   4. Exchange via POST /identity/refresh → session token (1h TTL)
@@ -17,8 +17,16 @@ import { resolve } from "path";
 import { homedir } from "os";
 
 const API_BASE = "https://api.morgen.so";
-const DEFAULT_PORT = parseInt(process.env.CDP_PORT || "9250", 10);
-const SESSION_FILE = resolve(homedir(), ".config", "morgen-cli", "session.json");
+const DEFAULT_PORT = parseInt(process.env.CDP_PORT || "9253", 10);
+
+/**
+ * Resolve session file path at call time so tests can redirect via
+ * MORGEN_SESSION_FILE without import-time binding.
+ */
+function getSessionFile(): string {
+  return process.env.MORGEN_SESSION_FILE
+    || resolve(homedir(), ".config", "morgen-cli", "session.json");
+}
 
 /**
  * Get CDP host from environment or default to localhost
@@ -38,12 +46,27 @@ export interface SessionInfo {
   source?: ConnectionSource; // "electron" or "chrome"
 }
 
-/** Check if Morgen is reachable via CDP (Chrome with morgen.so tab). */
+/** Classify a CDP target as Morgen Electron, Chrome web app, or neither. */
+function classifyTarget(t: any): ConnectionSource | null {
+  if (t.type !== "page") return null;
+  if (t.url?.startsWith("morgen://")) return "electron";
+  if (t.url?.includes("morgen.so")) return "chrome";
+  return null;
+}
+
+/** Check if Morgen is reachable via CDP (Chrome with morgen.so tab or Electron app). */
 export async function isMorgenRunning(port = DEFAULT_PORT): Promise<ConnectionSource | false> {
   try {
     const host = getCDPHost();
     const targets = await CDP.List({ host, port });
-    if (targets.some((t: any) => t.type === "page" && t.url?.includes("morgen.so"))) return "chrome";
+    // Prefer Electron if present (richer credentials via electronAPI bridge)
+    for (const t of targets) {
+      const kind = classifyTarget(t);
+      if (kind === "electron") return "electron";
+    }
+    for (const t of targets) {
+      if (classifyTarget(t) === "chrome") return "chrome";
+    }
     return false;
   } catch {
     return false;
@@ -51,16 +74,20 @@ export async function isMorgenRunning(port = DEFAULT_PORT): Promise<ConnectionSo
 }
 
 /**
- * Connect to Morgen via CDP. Finds the morgen.so tab in Chrome.
+ * Connect to Morgen via CDP. Finds the morgen.so tab in Chrome or the Electron app.
  * Returns the connection source and CDP client.
  */
 async function connectToMorgen(port: number): Promise<{ source: ConnectionSource; client: CDP.Client }> {
   const host = getCDPHost();
   const targets = await CDP.List({ host, port });
 
-  const chromeTarget = targets.find((t: any) =>
-    t.type === "page" && t.url?.includes("morgen.so")
-  );
+  // Prefer Electron if present
+  const electronTarget = targets.find((t) => classifyTarget(t) === "electron");
+  if (electronTarget) {
+    const client = await CDP({ host, port, target: electronTarget });
+    return { source: "electron", client };
+  }
+  const chromeTarget = targets.find((t) => classifyTarget(t) === "chrome");
   if (chromeTarget) {
     const client = await CDP({ host, port, target: chromeTarget });
     return { source: "chrome", client };
@@ -68,8 +95,9 @@ async function connectToMorgen(port: number): Promise<{ source: ConnectionSource
 
   throw new Error(
     `No Morgen target found on port ${port}.\n` +
-    "Ensure Chrome is running with --remote-debugging-port=" + port +
-    " and app.morgen.so is open."
+    "Start one of:\n" +
+    `  Chrome:   nanoclaw-chrome start\n` +
+    `  Electron: /Applications/Morgen.app/Contents/MacOS/Morgen --remote-debugging-port=${port}`
   );
 }
 
@@ -80,11 +108,19 @@ async function extractCredentialsFromClient(client: CDP.Client): Promise<{
 }> {
   const { Runtime } = client;
 
+  // morgen-refresh-token lives in standard localStorage in both Chrome and
+  // Electron. morgen-device-id is in standard localStorage on the web app, but
+  // the Electron desktop app stores it in window.electronAPI.localStorage
+  // (a custom IPC bridge), accessed via .get(key) — not getItem.
   const result = await Runtime.evaluate({
     expression: `
       (async () => {
         const refreshToken = localStorage.getItem("morgen-refresh-token");
-        const deviceId = localStorage.getItem("morgen-device-id");
+        let deviceId = localStorage.getItem("morgen-device-id");
+        if (!deviceId && window.electronAPI?.localStorage?.get) {
+          try { deviceId = await window.electronAPI.localStorage.get("morgen-device-id"); }
+          catch {}
+        }
         return JSON.stringify({ refreshToken, deviceId });
       })()
     `,
@@ -94,8 +130,12 @@ async function extractCredentialsFromClient(client: CDP.Client): Promise<{
 
   const creds = JSON.parse(result.result.value);
   if (!creds.refreshToken) throw new Error("No morgen-refresh-token found in Morgen app");
-  if (!creds.deviceId) throw new Error("No morgen-device-id found in Morgen app");
-
+  if (!creds.deviceId) {
+    throw new Error(
+      "No morgen-device-id found in Morgen app. " +
+      "Log in via the Morgen app once to register a device, then retry."
+    );
+  }
   return creds;
 }
 
@@ -129,15 +169,16 @@ async function exchangeForSession(
 
 /** Save session to disk for reuse. */
 export async function saveSession(session: SessionInfo): Promise<void> {
-  const dir = resolve(homedir(), ".config", "morgen-cli");
-  await Bun.write(resolve(dir, ".gitkeep"), ""); // ensure dir exists
-  await Bun.write(SESSION_FILE, JSON.stringify(session, null, 2));
+  const path = getSessionFile();
+  const { dirname } = await import("path");
+  await Bun.write(resolve(dirname(path), ".gitkeep"), ""); // ensure dir exists
+  await Bun.write(path, JSON.stringify(session, null, 2));
 }
 
 /** Load session from disk. Returns null if not found or expired. */
 export async function loadSession(): Promise<SessionInfo | null> {
   try {
-    const file = Bun.file(SESSION_FILE);
+    const file = Bun.file(getSessionFile());
     if (!(await file.exists())) return null;
     const session: SessionInfo = await file.json();
     // Check if expired (with 5-minute buffer)
@@ -163,7 +204,7 @@ export async function loadSession(): Promise<SessionInfo | null> {
  * Throws if no stored session or refresh fails.
  */
 export async function refreshSession(): Promise<SessionInfo> {
-  const file = Bun.file(SESSION_FILE);
+  const file = Bun.file(getSessionFile());
   if (!(await file.exists())) {
     throw new Error("No stored session to refresh");
   }

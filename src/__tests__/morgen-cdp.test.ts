@@ -1,10 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { resolve } from "path";
+import { tmpdir } from "os";
+import { mkdtempSync, rmSync } from "fs";
 
 // ── Mutable mock state ──
 let mockTargets: any[] = [];
 let mockCDPClient: any = null;
 let mockListShouldThrow = false;
+
+// Redirect session writes to a per-suite temp dir so tests never touch
+// the user's real ~/.config/morgen-cli/session.json.
+const TEST_TMP_DIR = mkdtempSync(resolve(tmpdir(), "morgen-cli-test-"));
+process.env.MORGEN_SESSION_FILE = resolve(TEST_TMP_DIR, "session.json");
+process.on("exit", () => { try { rmSync(TEST_TMP_DIR, { recursive: true, force: true }); } catch {} });
 
 // ── Mock chrome-remote-interface BEFORE importing module under test ──
 mock.module("chrome-remote-interface", () => {
@@ -28,7 +36,7 @@ const getSessionToken = mod.getSessionToken as typeof import("../morgen-cdp").ge
 const originalFetch = globalThis.fetch;
 
 function makeElectronTarget() {
-  return { type: "page", title: "Morgen Calendar", url: "chrome://electron" };
+  return { type: "page", title: "Morgen Calendar", url: "morgen://./app.html" };
 }
 
 function makeChromeTarget() {

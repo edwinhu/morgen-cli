@@ -49,7 +49,12 @@ describe("morgen CLI", () => {
     // Bun auto-loads .env, so we need a tmpdir without one
     // Also override HOME to prevent session-based auth
     const tmpdir = (await import("os")).tmpdir();
-    const env = { ...process.env, MORGEN_API_KEY: "", HOME: "/tmp/morgen-test-no-auth" };
+    const env = {
+      ...process.env,
+      MORGEN_API_KEY: "",
+      HOME: "/tmp/morgen-test-no-auth",
+      MORGEN_SESSION_FILE: "/tmp/morgen-test-no-auth/session.json",
+    };
 
     const proc = Bun.spawn(["bun", "run", CLI, "tasks"], {
       stdout: "pipe",
@@ -144,11 +149,13 @@ describe("morgen CLI", () => {
   });
 
   it("chat command without session token shows auth error", async () => {
-    // Ensure no session file exists by using a non-existent config dir
+    // Ensure no session file exists by using a non-existent config dir.
+    // Override MORGEN_SESSION_FILE in case the parent suite set it.
     const env = {
       ...process.env,
       MORGEN_API_KEY: "test-key",
       HOME: "/tmp/morgen-cli-test-nonexistent",
+      MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
     };
 
     const proc = Bun.spawn(["bun", "run", CLI, "chat", "hello"], {
