@@ -329,19 +329,43 @@ describe("executeTool", () => {
     expect(body.calendarId).toBe("cal-1");
   });
 
-  it("taskDelete calls /v3/tasks/delete with id", async () => {
+  it("taskDelete calls /v3/tasks/delete with id and cascades linked events", async () => {
+    const { resetCalendarCache } = await import("../calendars");
+    resetCalendarCache();
+    const urls: string[] = [];
     globalThis.fetch = (async (
       input: string | URL | Request,
       init?: RequestInit
     ) => {
-      lastRequest = { url: String(input), init };
+      const url = String(input);
+      urls.push(url);
+      lastRequest = { url, init };
+      if (url.includes("/v3/tasks?")) {
+        return new Response(JSON.stringify({
+          data: { task: { id: "task-456", title: "T", created: "2026-05-20T10:00:00Z" }, labelDefs: [] }
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/v3/calendars/list")) {
+        return new Response(JSON.stringify({
+          data: { calendars: [
+            { id: "cal-1", accountId: "acct-1", name: "Cal", myRights: { mayWriteAll: true } },
+          ] }
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/v3/events/list")) {
+        return new Response(JSON.stringify({ data: { events: [] } }), {
+          status: 200, headers: { "Content-Type": "application/json" }
+        });
+      }
       return new Response(null, { status: 204 });
     }) as typeof fetch;
 
     const result = await executeTool("taskDelete", '{"id":"task-456"}');
     const parsed = JSON.parse(result);
 
-    expect(lastRequest!.url).toContain("/v3/tasks/delete");
+    expect(urls.some((u) => u.includes("/v3/tasks/delete"))).toBe(true);
     expect(parsed.success).toBe(true);
+    expect(parsed.deletedEventIds).toEqual([]);
+    resetCalendarCache();
   });
 });

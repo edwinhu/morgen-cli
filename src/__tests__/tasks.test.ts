@@ -52,11 +52,15 @@ describe("decodeIntegrationId", () => {
 
 describe("tasks module behavior", () => {
   const originalEnv = process.env.MORGEN_API_KEY;
+  const originalSessionFile = process.env.MORGEN_SESSION_FILE;
   const originalFetch = globalThis.fetch;
   let lastRequest: { url: string; init?: RequestInit } | null = null;
 
   beforeEach(() => {
     process.env.MORGEN_API_KEY = "test-api-key-12345";
+    // Force API key auth: point session file at a path that won't exist,
+    // so loadSession() returns null and getAuthHeader falls through to MORGEN_API_KEY.
+    process.env.MORGEN_SESSION_FILE = "/tmp/morgen-cli-tasks-test-no-session.json";
     lastRequest = null;
   });
 
@@ -66,6 +70,11 @@ describe("tasks module behavior", () => {
       process.env.MORGEN_API_KEY = originalEnv;
     } else {
       delete process.env.MORGEN_API_KEY;
+    }
+    if (originalSessionFile) {
+      process.env.MORGEN_SESSION_FILE = originalSessionFile;
+    } else {
+      delete process.env.MORGEN_SESSION_FILE;
     }
   });
 
@@ -204,6 +213,125 @@ describe("tasks module behavior", () => {
     }) as typeof fetch;
 
     await expect(getTask(compoundId)).rejects.toThrow(`Task not found: ${compoundId}`);
+  });
+
+  it("deleteTask cascades to linked calendar events and deletes them before the task", async () => {
+    const { resetCalendarCache } = await import("../calendars");
+    resetCalendarCache();
+    const taskId = "task-with-event-1";
+    const linkedEventId = "evt-linked-1";
+    const unrelatedEventId = "evt-unrelated-2";
+    const calls: string[] = [];
+    const eventDeleteIds: string[] = [];
+    let taskDeleted = false;
+
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes("/v3/tasks?") && url.includes(`id=${taskId}`)) {
+        return new Response(JSON.stringify({
+          data: { task: { id: taskId, title: "T", created: "2026-05-20T10:00:00Z" }, labelDefs: [] }
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/v3/calendars/list")) {
+        return new Response(JSON.stringify({
+          data: { calendars: [
+            { id: "cal-1", accountId: "acct-1", name: "Cal 1", myRights: { mayWriteAll: true } },
+          ] }
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/v3/events/list")) {
+        return new Response(JSON.stringify({
+          data: { events: [
+            { id: linkedEventId, calendarId: "cal-1", accountId: "acct-1", start: "2026-05-22T16:00:00", title: "Linked", "morgen.so:metadata": { taskId } },
+            { id: unrelatedEventId, calendarId: "cal-1", accountId: "acct-1", start: "2026-05-22T17:00:00", title: "Unrelated" },
+          ] }
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/v3/events/delete")) {
+        const body = JSON.parse(init?.body as string);
+        eventDeleteIds.push(body.id);
+        return new Response(null, { status: 204 });
+      }
+      if (url.includes("/v3/tasks/delete")) {
+        taskDeleted = true;
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    }) as typeof fetch;
+
+    const result = await deleteTask(taskId);
+
+    expect(result.deletedEventIds).toEqual([linkedEventId]);
+    expect(eventDeleteIds).toEqual([linkedEventId]); // linked deleted, unrelated NOT
+    expect(taskDeleted).toBe(true);
+    // tasks/delete was called after the event deletes (last call)
+    expect(calls[calls.length - 1]).toContain("/v3/tasks/delete");
+    resetCalendarCache();
+  });
+
+  it("deleteTask still deletes the task when no linked events exist", async () => {
+    const { resetCalendarCache } = await import("../calendars");
+    resetCalendarCache();
+    const taskId = "lonely-task";
+    let taskDeleted = false;
+
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/v3/tasks?") && url.includes(`id=${taskId}`)) {
+        return new Response(JSON.stringify({
+          data: { task: { id: taskId, title: "T", created: "2026-05-20T10:00:00Z" }, labelDefs: [] }
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/v3/calendars/list")) {
+        return new Response(JSON.stringify({
+          data: { calendars: [
+            { id: "cal-1", accountId: "acct-1", name: "Cal 1", myRights: { mayWriteAll: true } },
+          ] }
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/v3/events/list")) {
+        return new Response(JSON.stringify({ data: { events: [] } }), {
+          status: 200, headers: { "Content-Type": "application/json" }
+        });
+      }
+      if (url.includes("/v3/tasks/delete")) {
+        taskDeleted = true;
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    }) as typeof fetch;
+
+    const result = await deleteTask(taskId);
+
+    expect(result.deletedEventIds).toEqual([]);
+    expect(taskDeleted).toBe(true);
+    resetCalendarCache();
+  });
+
+  it("deleteTask with cascadeLinkedEvents:false skips the event scan", async () => {
+    const taskId = "task-no-cascade";
+    let listEventsCalled = false;
+    let taskDeleted = false;
+
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/v3/events/list") || url.includes("/v3/calendars/list")) {
+        listEventsCalled = true;
+        throw new Error(`Should not list events when cascade is false (url: ${url})`);
+      }
+      if (url.includes("/v3/tasks/delete")) {
+        taskDeleted = true;
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    }) as typeof fetch;
+
+    const result = await deleteTask(taskId, { cascadeLinkedEvents: false });
+
+    expect(listEventsCalled).toBe(false);
+    expect(taskDeleted).toBe(true);
+    expect(result.deletedEventIds).toEqual([]);
   });
 
   it("listIntegrationAccounts filters to task accounts", async () => {

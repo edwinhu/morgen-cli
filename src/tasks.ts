@@ -14,6 +14,7 @@
  */
 
 import { morgenFetch } from "./morgen-api";
+import { listEvents, deleteEvent } from "./calendars";
 import type {
   MorgenTask,
   TaskListResponse,
@@ -290,8 +291,41 @@ export async function reopenTask(id: string, occurrenceStart?: string): Promise<
 // Delete — Morgen-native only
 // ---------------------------------------------------------------------------
 
-export async function deleteTask(id: string): Promise<void> {
+/**
+ * Find calendar events whose morgen.so:metadata.taskId points at this task.
+ * Scans a wide window (task.created - 1d .. now + 365d) since scheduled
+ * events can be anywhere in the future. Returns IDs only.
+ */
+async function findLinkedEventIds(taskId: string, task?: MorgenTask): Promise<string[]> {
+  const now = new Date();
+  const created = task?.created ? new Date(task.created) : new Date(now.getTime() - 30 * 86400_000);
+  const start = new Date(Math.min(created.getTime() - 86400_000, now.getTime() - 86400_000));
+  const end = new Date(now.getTime() + 365 * 86400_000);
+
+  const toIso = (d: Date) => d.toISOString().slice(0, 19);
+  const events = await listEvents({ start: toIso(start), end: toIso(end) });
+  return events
+    .filter((e) => (e as any)["morgen.so:metadata"]?.taskId === taskId)
+    .map((e) => e.id);
+}
+
+export async function deleteTask(
+  id: string,
+  options?: { cascadeLinkedEvents?: boolean }
+): Promise<{ deletedEventIds: string[] }> {
+  const cascade = options?.cascadeLinkedEvents !== false;
+  let deletedEventIds: string[] = [];
+  if (cascade) {
+    // Best-effort: fetch task to narrow the window. If fetch fails (e.g. task
+    // already gone), fall through to a wide scan.
+    let task: MorgenTask | undefined;
+    try { task = await getTask(id); } catch {}
+    const linkedIds = await findLinkedEventIds(id, task);
+    await Promise.all(linkedIds.map((eid) => deleteEvent(eid).catch(() => {})));
+    deletedEventIds = linkedIds;
+  }
   await morgenFetch<void>("/tasks/delete", { method: "POST", body: { id } });
+  return { deletedEventIds };
 }
 
 // ---------------------------------------------------------------------------

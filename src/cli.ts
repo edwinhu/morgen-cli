@@ -583,13 +583,17 @@ async function handleTasks(opts: CliOptions) {
       error("Usage: morgen tasks delete <id>");
       process.exit(1);
     }
-    await deleteTask(opts.positional);
+    const { deletedEventIds } = await deleteTask(opts.positional);
+    const payload = { success: true, deletedEventIds };
     if (opts.ndjson) {
-      printNdjson({ success: true });
+      printNdjson(payload);
     } else if (opts.json) {
-      console.log(JSON.stringify({ success: true }));
+      console.log(JSON.stringify(payload));
     } else {
-      success("Task deleted");
+      const suffix = deletedEventIds.length
+        ? ` (removed ${deletedEventIds.length} linked event${deletedEventIds.length > 1 ? "s" : ""})`
+        : "";
+      success(`Task deleted${suffix}`);
     }
     return;
   }

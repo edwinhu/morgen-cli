@@ -547,8 +547,8 @@ async function executeTaskReopen(args: { id: string }): Promise<string> {
 }
 
 async function executeTaskDelete(args: { id: string }): Promise<string> {
-  await deleteTask(args.id);
-  return JSON.stringify({ success: true });
+  const { deletedEventIds } = await deleteTask(args.id);
+  return JSON.stringify({ success: true, deletedEventIds });
 }
 
 // ---------------------------------------------------------------------------
