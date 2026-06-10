@@ -219,7 +219,27 @@ invite persists the exact virtualRoom shape of a working booking page.
 NOTE: `fetchBookingInfo` does **not** surface conferencing pre-booking; the link is applied to the
 created event at booking time (the captured `bookedEvents` of a real page show the Zoom URL in the
 event description + virtualRoom). Original `open-invite` (shipped earlier in v0.9.0) omitted
-virtualRoom, so meetings booked through it had no video link — fixed here.
+virtualRoom, so meetings booked through it had no video link — fixed in v0.9.1.
+
+### CRITICAL: a static room's `virtualRoom` is NOT injected into the booked calendar event (v0.9.2)
+
+Confirmed by a real booking (Olivia Sahid, 2026-06-15): an invite with `virtualRoom`
+(serviceName `morgen`, meetingUrl = the Zoom) produced a booked Outlook event that had the
+virtualRoom on Morgen's internal `bookedEvents` record **but no Zoom anywhere in the actual
+calendar event** (no `location`, nothing in the description). Only **Google Meet / Teams** are
+auto-created per booking and appear natively; a **static personal room** ("morgen") is not pushed
+into the o365 event body.
+
+The reason the user's existing office-hours booking page shows the Zoom: its link **`event.description`
+(organizer notes)** literally contains `Join Meeting\nhttps://…zoom…`, and the booking flow copies
+organizer notes into every booked event as `Organizer notes: …`. So the operative mechanism for a
+static room is the description, not virtualRoom.
+
+Fix (v0.9.2): for a static personal room, also prepend `Join meeting:\n<url>` to the link's
+`event.description`. Keep `virtualRoom` too (Morgen-native UI + it's harmless). Google Meet/Teams
+do NOT get a description URL (auto-created natively). Also note: the Morgen **`/v3/events/update`
+whitelist rejects a `location` field** — to retro-fit the Zoom onto an already-booked event you must
+edit the event **description** (200), not location (400 `property location should not exist`).
 
 ## CLI shape implemented
 

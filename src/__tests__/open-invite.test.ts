@@ -212,10 +212,38 @@ describe("open-invite module", () => {
       slots: parseSlots("2026-06-15T14:00:00Z/2026-06-15T16:00:00Z"),
     });
     expect(inv.conferencing).toBe("Personal Zoom Room");
-    const vr = commitBodies[0].writes[0].update.fields.bookingOptions.mapValue.fields.virtualRoom;
+    const fields = commitBodies[0].writes[0].update.fields;
+    const vr = fields.bookingOptions.mapValue.fields.virtualRoom;
     expect(vr.mapValue.fields.serviceName.stringValue).toBe("morgen");
     expect(vr.mapValue.fields.accountId.stringValue).toBe("room1@morgen.so");
     expect(vr.mapValue.fields.meetingUrl.stringValue).toBe("https://zoom.example/j/123");
+    // A static room URL must also land in event.description (organizer notes) so it reaches the
+    // invitee's booked calendar event — virtualRoom alone does not inject it.
+    expect(fields.event.mapValue.fields.description.stringValue).toContain("https://zoom.example/j/123");
+  });
+
+  it("prepends the room join URL ahead of a user-supplied description", async () => {
+    roomDocs = [ROOM_DOC];
+    installMockFetch({ bookingSlots: 4 });
+    await createOpenInvite({
+      slots: parseSlots("2026-06-15T14:00:00Z/2026-06-15T16:00:00Z"),
+      description: "Looking forward to it.",
+    });
+    const desc =
+      commitBodies[0].writes[0].update.fields.event.mapValue.fields.description.stringValue;
+    expect(desc.indexOf("https://zoom.example/j/123")).toBeLessThan(desc.indexOf("Looking forward"));
+  });
+
+  it("does not add a join URL to the description for Google Meet (auto-created per booking)", async () => {
+    installMockFetch({ bookingSlots: 4 });
+    await createOpenInvite({
+      slots: parseSlots("2026-06-15T14:00:00Z/2026-06-15T16:00:00Z"),
+      calendar: "gmail",
+      conferencing: "google-meet",
+    });
+    expect(
+      commitBodies[0].writes[0].update.fields.event.mapValue.fields.description
+    ).toBeUndefined();
   });
 
   it("attaches no conferencing when there is no room and mode is auto", async () => {

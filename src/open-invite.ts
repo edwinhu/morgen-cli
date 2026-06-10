@@ -289,13 +289,18 @@ async function fetchRooms(idToken: string, uid: string): Promise<MeetingRoom[]> 
  *   personal room → { serviceName: "morgen", accountId/meetingId: <room id>, meetingUrl }
  *   Google Meet   → { serviceName: "googleMeet", accountId: "google::<acct>", meetingId/Url: null }
  *   Teams         → { serviceName: "teams", accountId: "o365::<acct>", meetingId/Url: null }
+ *
+ * `descriptionUrl` is set only for a static personal room: Morgen does NOT inject a static room's
+ * URL into the booked calendar event (only Google Meet/Teams are auto-created per booking), so the
+ * URL must also go into the link's organizer-notes (event.description) to actually reach the
+ * invitee's calendar event. See docs/investigations/2026-06-10_open-invites.md.
  */
 async function resolveVirtualRoom(
   input: CreateOpenInviteInput,
   target: CalendarTarget,
   idToken: string,
   uid: string
-): Promise<{ value: FsValue; label: string } | null> {
+): Promise<{ value: FsValue; label: string; descriptionUrl?: string } | null> {
   const mode: Conferencing = input.conferencing || "auto";
   if (mode === "none") return null;
 
@@ -343,6 +348,7 @@ async function resolveVirtualRoom(
     room = rooms[0];
   }
   return {
+    descriptionUrl: room!.url,
     value: fs.map({
       serviceName: fs.str("morgen"),
       accountId: fs.str(room!.id),
@@ -387,8 +393,18 @@ export async function createOpenInvite(input: CreateOpenInviteInput): Promise<Op
   const hrefShort = generateHrefShort();
   const mtStamp = new Date().toISOString();
 
+  // Organizer notes (event.description) propagate into the booked calendar event. For a static
+  // personal room, prepend the join URL here so it actually reaches the invitee (virtualRoom alone
+  // does not inject a static room's URL into the booked event).
+  const descriptionParts: string[] = [];
+  if (conferencing?.descriptionUrl) {
+    descriptionParts.push(`Join meeting:\n${conferencing.descriptionUrl}`);
+  }
+  if (input.description) descriptionParts.push(input.description);
+  const eventDescription = descriptionParts.join("\n\n");
+
   const eventFields: Record<string, FsValue> = { summary: fs.str(title) };
-  if (input.description) eventFields.description = fs.str(input.description);
+  if (eventDescription) eventFields.description = fs.str(eventDescription);
   if (input.location) eventFields.location = fs.str(input.location);
 
   const fields: Record<string, FsValue> = {
