@@ -186,13 +186,50 @@ link you must overwrite the doc to the minimal deleted shape (drop `href`):
 - The Morgen Electron app holds a single-instance lock, so `--remote-debugging-port` is ignored if
   an instance is already running; fully quit it first to enable CDP.
 
+## Video conferencing (virtualRoom) — added 2026-06-10
+
+A booked meeting gets a conferencing link via `bookingOptions.virtualRoom`. Three services
+(from the bundle): `morgen` (a static **personal meeting room**, e.g. a personal Zoom URL),
+`googleMeet` (auto-created per booking), `teams`. The app's editor sets:
+
+```js
+bookingOptions.virtualRoom = { accountId, serviceName, meetingId: null, meetingUrl: null }
+//   personal room → accountId = room.providerId (serviceName "morgen")
+//   Google Meet   → accountId = `google::${calendarAccountId}` (serviceName "googleMeet")
+//   Teams         → accountId = `o365::${calendarAccountId}`   (serviceName "teams")
+```
+
+Personal meeting rooms live in their own Firestore collection `users/{uid}/rooms`, each
+`{ url, displayName, providerId }`. For a personal room the persisted virtualRoom fills in the
+URL/id directly (matching a real booking page):
+
+```jsonc
+"virtualRoom": {
+  "serviceName": "morgen",
+  "accountId":   "<room.providerId>",     // "<uuid>@morgen.so"
+  "meetingId":   "<room.providerId>",
+  "meetingUrl":  "<room.url>"             // e.g. https://law-virginia.zoom.us/j/3823453577
+}
+```
+
+The CLI defaults to **auto**: attach the personal meeting room if the account has one (matching how
+the user's existing booking pages behave), else none. Verified end-to-end — an auto-conferencing
+invite persists the exact virtualRoom shape of a working booking page.
+
+NOTE: `fetchBookingInfo` does **not** surface conferencing pre-booking; the link is applied to the
+created event at booking time (the captured `bookedEvents` of a real page show the Zoom URL in the
+event description + virtualRoom). Original `open-invite` (shipped earlier in v0.9.0) omitted
+virtualRoom, so meetings booked through it had no video link — fixed here.
+
 ## CLI shape implemented
 
 ```
 morgen open-invite --slots "<startISO>/<endISO>,…" [--title T] [--duration 30]
                    [--calendar <name>] [--timezone <tz>] [--location L] [--description D]
                    [--no-availability-check]
+                   [--conferencing auto|room|zoom|google-meet|teams|none] [--room <name>] [--no-conferencing]
 morgen open-invite list
+morgen open-invite rooms
 morgen open-invite delete <href|id>
 ```
 

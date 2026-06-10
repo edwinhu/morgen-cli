@@ -84,6 +84,16 @@ export interface OpenInviteSlot {
   end: string; // ISO
 }
 
+/**
+ * Video conferencing to attach to the booked meeting:
+ *   - "auto"       (default) attach the personal meeting room if one exists, else none
+ *   - "room"       attach a personal meeting room (your static Zoom/etc.); see `room`
+ *   - "google-meet" auto-create a Google Meet per booking (Google-hosted calendar)
+ *   - "teams"      auto-create a Teams meeting per booking (Microsoft-hosted calendar)
+ *   - "none"       no conferencing link
+ */
+export type Conferencing = "auto" | "room" | "google-meet" | "teams" | "none";
+
 export interface CreateOpenInviteInput {
   /** Proposed availability windows the invitee chooses from. */
   slots: OpenInviteSlot[];
@@ -98,6 +108,10 @@ export interface CreateOpenInviteInput {
   timeZone?: string;
   /** If true, do not also check live calendar availability (just offer the windows). */
   disableAvailabilityCheck?: boolean;
+  /** Video conferencing to attach. Default "auto". */
+  conferencing?: Conferencing;
+  /** Personal meeting room name (partial match) when more than one exists. */
+  room?: string;
   port?: number;
 }
 
@@ -112,6 +126,14 @@ export interface OpenInvite {
   durations: number[];
   timeZone?: string;
   slots: string[]; // "startISO/endISO" windows
+  conferencing?: string; // human-readable conferencing label, if attached
+}
+
+/** A Morgen personal meeting room (static conferencing URL, e.g. a personal Zoom room). */
+export interface MeetingRoom {
+  id: string; // providerId (e.g. "<uuid>@morgen.so")
+  displayName: string;
+  url: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,10 +187,11 @@ function buildBookingOptions(
   input: CreateOpenInviteInput,
   target: CalendarTarget,
   timeZone: string,
-  duration: number
+  duration: number,
+  virtualRoom: FsValue | null
 ): FsValue {
   const slotStrings = input.slots.map((s) => fs.str(`${toUtcZ(s.start)}/${toUtcZ(s.end)}`));
-  return fs.map({
+  const fields: Record<string, FsValue> = {
     durations: fs.arr([fs.int(duration)]),
     minNotice: fs.int(60),
     futureLimit: fs.int(40320),
@@ -193,7 +216,9 @@ function buildBookingOptions(
         }),
       ]),
     }),
-  });
+  };
+  if (virtualRoom) fields.virtualRoom = virtualRoom;
+  return fs.map(fields);
 }
 
 /** Normalize an ISO string to UTC with a trailing Z (Firestore stores window strings in UTC). */
@@ -220,9 +245,13 @@ async function firestoreCommit(idToken: string, write: object): Promise<void> {
   }
 }
 
-async function firestoreList(idToken: string, uid: string): Promise<any[]> {
+async function firestoreList(
+  idToken: string,
+  uid: string,
+  collection = "schedulingLinks"
+): Promise<any[]> {
   const resp = await fetch(
-    `${FIRESTORE_BASE}/users/${uid}/schedulingLinks?pageSize=200`,
+    `${FIRESTORE_BASE}/users/${uid}/${collection}?pageSize=200`,
     { headers: { Authorization: `Bearer ${idToken}` } }
   );
   if (!resp.ok) {
@@ -231,6 +260,97 @@ async function firestoreList(idToken: string, uid: string): Promise<any[]> {
   }
   const data = (await resp.json()) as { documents?: any[] };
   return data.documents || [];
+}
+
+/** Fetch the user's personal meeting rooms (static conferencing URLs). */
+async function fetchRooms(idToken: string, uid: string): Promise<MeetingRoom[]> {
+  const docs = await firestoreList(idToken, uid, "rooms");
+  const rooms: MeetingRoom[] = [];
+  for (const doc of docs) {
+    const f = doc.fields || {};
+    if ((decodeValue(f.mtInternalSync) as string | null) === "deleted") continue;
+    const url = decodeValue(f.url) as string | null;
+    const providerId = decodeValue(f.providerId) as string | null;
+    if (!url || !providerId) continue;
+    rooms.push({
+      id: providerId,
+      displayName: (decodeValue(f.displayName) as string) || "Meeting Room",
+      url,
+    });
+  }
+  return rooms;
+}
+
+/**
+ * Resolve the `bookingOptions.virtualRoom` value (and a human label) for the requested
+ * conferencing mode. Returns null when no conferencing should be attached.
+ *
+ * Shapes mirror the Morgen app's scheduling editor:
+ *   personal room → { serviceName: "morgen", accountId/meetingId: <room id>, meetingUrl }
+ *   Google Meet   → { serviceName: "googleMeet", accountId: "google::<acct>", meetingId/Url: null }
+ *   Teams         → { serviceName: "teams", accountId: "o365::<acct>", meetingId/Url: null }
+ */
+async function resolveVirtualRoom(
+  input: CreateOpenInviteInput,
+  target: CalendarTarget,
+  idToken: string,
+  uid: string
+): Promise<{ value: FsValue; label: string } | null> {
+  const mode: Conferencing = input.conferencing || "auto";
+  if (mode === "none") return null;
+
+  if (mode === "google-meet") {
+    return {
+      value: fs.map({
+        serviceName: fs.str("googleMeet"),
+        accountId: fs.str(`google::${target.targetAccount}`),
+        meetingId: fs.nil(),
+        meetingUrl: fs.nil(),
+      }),
+      label: "Google Meet (auto-created per booking)",
+    };
+  }
+  if (mode === "teams") {
+    return {
+      value: fs.map({
+        serviceName: fs.str("teams"),
+        accountId: fs.str(`o365::${target.targetAccount}`),
+        meetingId: fs.nil(),
+        meetingUrl: fs.nil(),
+      }),
+      label: "Microsoft Teams (auto-created per booking)",
+    };
+  }
+
+  // "room" or "auto" → personal meeting room.
+  const rooms = await fetchRooms(idToken, uid);
+  if (rooms.length === 0) {
+    if (mode === "room") {
+      throw new Error("No personal meeting room found. Add one in Morgen, or use --conferencing none.");
+    }
+    return null; // auto: nothing to attach
+  }
+  let room: MeetingRoom | undefined;
+  if (input.room) {
+    const lower = input.room.toLowerCase();
+    room = rooms.find((r) => r.displayName.toLowerCase().includes(lower));
+    if (!room) {
+      throw new Error(
+        `No meeting room matching "${input.room}". Available: ${rooms.map((r) => r.displayName).join(", ")}`
+      );
+    }
+  } else {
+    room = rooms[0];
+  }
+  return {
+    value: fs.map({
+      serviceName: fs.str("morgen"),
+      accountId: fs.str(room!.id),
+      meetingId: fs.str(room!.id),
+      meetingUrl: fs.str(room!.url),
+    }),
+    label: room!.displayName,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +378,7 @@ export async function createOpenInvite(input: CreateOpenInviteInput): Promise<Op
 
   const session = await getFirebaseSession(input.port);
   const target = await resolveTarget(input.calendar);
+  const conferencing = await resolveVirtualRoom(input, target, session.idToken, session.uid);
 
   const id = crypto.randomUUID();
   const providerId = `${id}@morgen.so`;
@@ -276,7 +397,7 @@ export async function createOpenInvite(input: CreateOpenInviteInput): Promise<Op
     providerId: fs.str(providerId),
     type: fs.str("one-time-link"),
     visibility: fs.str("private"),
-    bookingOptions: buildBookingOptions(input, target, timeZone, duration),
+    bookingOptions: buildBookingOptions(input, target, timeZone, duration, conferencing?.value ?? null),
     event: fs.map(eventFields),
     attendee: fs.nil(),
     additionalAttendees: fs.arr([]),
@@ -309,7 +430,14 @@ export async function createOpenInvite(input: CreateOpenInviteInput): Promise<Op
     durations: [duration],
     timeZone,
     slots: input.slots.map((s) => `${toUtcZ(s.start)}/${toUtcZ(s.end)}`),
+    conferencing: conferencing?.label,
   };
+}
+
+/** List the user's personal meeting rooms (static conferencing URLs). */
+export async function listRooms(port?: number): Promise<MeetingRoom[]> {
+  const session = await getFirebaseSession(port);
+  return fetchRooms(session.idToken, session.uid);
 }
 
 /** List the user's Open Invites (one-time links), excluding soft-deleted ones. */
@@ -337,6 +465,7 @@ export async function listOpenInvites(port?: number): Promise<OpenInvite[]> {
       durations: bo.durations || [],
       timeZone: bo.predefinedSlotsTimezone,
       slots: bo.predefinedSlots || [],
+      conferencing: bo.virtualRoom?.meetingUrl || bo.virtualRoom?.serviceName,
     });
   }
   return out;

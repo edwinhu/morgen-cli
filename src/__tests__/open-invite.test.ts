@@ -47,6 +47,17 @@ describe("open-invite module", () => {
   const originalFetch = globalThis.fetch;
   let commitBodies: any[] = [];
   let listDocs: any[] = [];
+  let roomDocs: any[] = [];
+
+  const ROOM_DOC = {
+    name: ".../rooms/room1%40morgen.so",
+    fields: {
+      url: { stringValue: "https://zoom.example/j/123" },
+      displayName: { stringValue: "Personal Zoom Room" },
+      providerId: { stringValue: "room1@morgen.so" },
+      mtInternalSync: { stringValue: "synced" },
+    },
+  };
 
   beforeEach(async () => {
     process.env.MORGEN_API_KEY = "test-api-key";
@@ -54,6 +65,7 @@ describe("open-invite module", () => {
     resetCalendarCache();
     commitBodies = [];
     listDocs = [];
+    roomDocs = [];
     // Cached Firebase session with a far-future id token => no CDP / securetoken needed.
     await Bun.write(
       FIREBASE_FILE,
@@ -93,6 +105,9 @@ describe("open-invite module", () => {
       }
       if (url.includes("firestore.googleapis.com") && url.includes("/schedulingLinks?")) {
         return new Response(JSON.stringify({ documents: listDocs }), { status: 200 });
+      }
+      if (url.includes("firestore.googleapis.com") && url.includes("/rooms?")) {
+        return new Response(JSON.stringify({ documents: roomDocs }), { status: 200 });
       }
       if (url.includes("/scheduler/fetchBookingInfo")) {
         const slots = opts?.bookingSlots;
@@ -186,6 +201,70 @@ describe("open-invite module", () => {
     const bo = commitBodies[0].writes[0].update.fields.bookingOptions.mapValue.fields;
     expect(bo.targetCalendar.stringValue).toBe("GMAIL_CAL_ID_BASE64");
     expect(bo.organizerAccountEmail.stringValue).toBe("personal@example.com");
+  });
+
+  // -- conferencing ---------------------------------------------------------
+
+  it("auto-attaches the personal meeting room (virtualRoom) when one exists", async () => {
+    roomDocs = [ROOM_DOC];
+    installMockFetch({ bookingSlots: 4 });
+    const inv = await createOpenInvite({
+      slots: parseSlots("2026-06-15T14:00:00Z/2026-06-15T16:00:00Z"),
+    });
+    expect(inv.conferencing).toBe("Personal Zoom Room");
+    const vr = commitBodies[0].writes[0].update.fields.bookingOptions.mapValue.fields.virtualRoom;
+    expect(vr.mapValue.fields.serviceName.stringValue).toBe("morgen");
+    expect(vr.mapValue.fields.accountId.stringValue).toBe("room1@morgen.so");
+    expect(vr.mapValue.fields.meetingUrl.stringValue).toBe("https://zoom.example/j/123");
+  });
+
+  it("attaches no conferencing when there is no room and mode is auto", async () => {
+    roomDocs = [];
+    installMockFetch({ bookingSlots: 4 });
+    const inv = await createOpenInvite({
+      slots: parseSlots("2026-06-15T14:00:00Z/2026-06-15T16:00:00Z"),
+    });
+    expect(inv.conferencing).toBeUndefined();
+    expect(
+      commitBodies[0].writes[0].update.fields.bookingOptions.mapValue.fields.virtualRoom
+    ).toBeUndefined();
+  });
+
+  it("omits conferencing when explicitly set to none", async () => {
+    roomDocs = [ROOM_DOC];
+    installMockFetch({ bookingSlots: 4 });
+    const inv = await createOpenInvite({
+      slots: parseSlots("2026-06-15T14:00:00Z/2026-06-15T16:00:00Z"),
+      conferencing: "none",
+    });
+    expect(inv.conferencing).toBeUndefined();
+    expect(
+      commitBodies[0].writes[0].update.fields.bookingOptions.mapValue.fields.virtualRoom
+    ).toBeUndefined();
+  });
+
+  it("builds a Google Meet virtualRoom keyed to the target account", async () => {
+    installMockFetch({ bookingSlots: 4 });
+    await createOpenInvite({
+      slots: parseSlots("2026-06-15T14:00:00Z/2026-06-15T16:00:00Z"),
+      calendar: "gmail",
+      conferencing: "google-meet",
+    });
+    const vr = commitBodies[0].writes[0].update.fields.bookingOptions.mapValue.fields.virtualRoom;
+    expect(vr.mapValue.fields.serviceName.stringValue).toBe("googleMeet");
+    expect(vr.mapValue.fields.accountId.stringValue).toBe("google::acc-personal");
+  });
+
+  it("throws when --room names a non-existent room", async () => {
+    roomDocs = [ROOM_DOC];
+    installMockFetch({ bookingSlots: 4 });
+    await expect(
+      createOpenInvite({
+        slots: parseSlots("2026-06-15T14:00:00Z/2026-06-15T16:00:00Z"),
+        conferencing: "room",
+        room: "nonexistent",
+      })
+    ).rejects.toThrow(/No meeting room matching/);
   });
 
   it("normalizes slot times to UTC Z windows", async () => {

@@ -46,9 +46,16 @@ export type { FirebaseSession, FirebaseCredentials } from "./morgen-firebase.ts"
 export {
   createOpenInvite,
   listOpenInvites,
+  listRooms,
   deleteOpenInvite,
   fetchBookingInfo,
   parseSlots,
 } from "./open-invite.ts";
-export type { OpenInvite, OpenInviteSlot, CreateOpenInviteInput } from "./open-invite.ts";
+export type {
+  OpenInvite,
+  OpenInviteSlot,
+  CreateOpenInviteInput,
+  Conferencing,
+  MeetingRoom,
+} from "./open-invite.ts";
 export type * from "./types.ts";

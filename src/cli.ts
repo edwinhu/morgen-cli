@@ -29,10 +29,12 @@ import { sendChat } from "./chat";
 import {
   createOpenInvite,
   listOpenInvites,
+  listRooms,
   deleteOpenInvite,
   fetchBookingInfo,
   parseSlots,
   type OpenInvite,
+  type Conferencing,
 } from "./open-invite";
 import { MorgenApiError } from "./morgen-api";
 import { authenticate } from "./morgen-cdp";
@@ -113,6 +115,8 @@ interface CliOptions {
   slots?: string;
   calendar?: string;
   noAvailabilityCheck?: boolean;
+  conferencing?: string;
+  room?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +157,7 @@ function parseArgs(args: string[]): CliOptions {
       if (key === "all-day") { opts.allDay = true; i++; continue; }
       if (key === "only-primary") { opts.onlyPrimary = true; i++; continue; }
       if (key === "no-availability-check") { opts.noAvailabilityCheck = true; i++; continue; }
+      if (key === "no-conferencing" || key === "no-conf") { opts.conferencing = "none"; i++; continue; }
 
       const next = args[i + 1];
       if (next !== undefined) {
@@ -207,6 +212,8 @@ function setNamedArg(opts: CliOptions, key: string, value: string): void {
     case "calendar": opts.calendarId = value; opts.calendar = value; break;
     case "calendar-id": opts.calendarId = value; break;
     case "slots": opts.slots = value; break;
+    case "conferencing": case "conf": opts.conferencing = value; break;
+    case "room": opts.room = value; break;
     case "start": opts.start = value; break;
     case "end": opts.end = value; break;
     case "timezone": case "tz": opts.timeZone = value; break;
@@ -294,6 +301,7 @@ ${colors.bold}COMMANDS${colors.reset}
   ${colors.cyan}calendar free${colors.reset}      Find free time slots (--start, --end)
   ${colors.cyan}open-invite${colors.reset}        Create a one-off booking link (--slots, --title)
   ${colors.cyan}open-invite list${colors.reset}   List your open invites (one-time booking links)
+  ${colors.cyan}open-invite rooms${colors.reset}  List your personal meeting rooms (for --room)
   ${colors.cyan}open-invite delete${colors.reset} <href> Delete an open invite
   ${colors.cyan}chat${colors.reset} <prompt>       Chat with Morgen AI assistant
   ${colors.cyan}help${colors.reset}               Show this help message
@@ -323,6 +331,9 @@ ${colors.bold}OPTIONS${colors.reset}
   --slots <windows>   Open Invite: proposed windows "startISO/endISO,..." (UTC or with offset)
   --calendar <name>   Open Invite: calendar to host the booked event (partial name match)
   --no-availability-check  Open Invite: offer the windows without checking live conflicts
+  --conferencing <svc> Open Invite: auto (default) | room/zoom | google-meet | teams | none
+  --room <name>       Open Invite: personal meeting room to attach (when more than one)
+  --no-conferencing   Open Invite: don't attach a video link (alias for --conferencing none)
   --calendars <names> Filter: only include these calendars (partial name match)
   --exclude-calendars <names> Filter: exclude these calendars (partial name match)
   --only-primary      Filter: only primary calendar (for chat)
@@ -371,6 +382,10 @@ ${colors.bold}EXAMPLES${colors.reset}
   ${colors.dim}# Mint a one-off booking link offering two windows, 30-min meeting${colors.reset}
   morgen open-invite --title "Intro call" --duration 30 \\
     --slots "2026-06-12T14:00:00Z/2026-06-12T17:00:00Z,2026-06-13T18:00:00Z/2026-06-13T20:00:00Z"
+  ${colors.dim}# (a video link is attached automatically if you have a personal meeting room)${colors.reset}
+  morgen open-invite --slots "..." --conferencing google-meet --calendar Gmail
+  morgen open-invite --slots "..." --no-conferencing
+  morgen open-invite rooms
   morgen open-invite list
   morgen open-invite delete <href>
 
@@ -1102,9 +1117,11 @@ function formatOpenInvite(inv: OpenInvite): string {
       return `    ${colors.dim}${start} → ${end}${colors.reset}`;
     })
     .join("\n");
+  const conf = inv.conferencing ? `  ${colors.dim}📹 ${inv.conferencing}${colors.reset}\n` : "";
   return (
     `${colors.bold}${inv.title || "(untitled)"}${colors.reset}  ${colors.dim}${inv.durations.join("/")}min${colors.reset}\n` +
     `  ${colors.cyan}${inv.link}${colors.reset}\n` +
+    conf +
     (slotLines ? slotLines + "\n" : "") +
     `  ${colors.dim}${inv.providerId}${colors.reset}`
   );
@@ -1112,6 +1129,23 @@ function formatOpenInvite(inv: OpenInvite): string {
 
 async function handleOpenInvite(opts: CliOptions) {
   const sub = opts.subCommand;
+
+  // rooms — list available personal meeting rooms (for --room)
+  if (sub === "rooms") {
+    const rooms = await listRooms(opts.port);
+    if (opts.json || opts.ndjson) {
+      opts.ndjson ? rooms.forEach(printNdjson) : console.log(JSON.stringify(rooms, null, 2));
+    } else if (rooms.length === 0) {
+      console.log(`${colors.dim}No personal meeting rooms${colors.reset}`);
+    } else {
+      console.log(
+        rooms
+          .map((r) => `${colors.bold}${r.displayName}${colors.reset}\n  ${colors.cyan}${r.url}${colors.reset}`)
+          .join("\n\n")
+      );
+    }
+    return;
+  }
 
   // list
   if (sub === "list") {
@@ -1158,6 +1192,28 @@ async function handleOpenInvite(opts: CliOptions) {
 
   const slots = parseSlots(opts.slots);
   const duration = opts.duration ? parseInt(opts.duration, 10) : 30;
+  const validConferencing: Conferencing[] = ["auto", "room", "google-meet", "teams", "none"];
+  // Accept a few friendly aliases for --conferencing.
+  const confAlias: Record<string, Conferencing> = {
+    zoom: "room",
+    meet: "google-meet",
+    googlemeet: "google-meet",
+    "google-meet": "google-meet",
+    teams: "teams",
+    none: "none",
+    auto: "auto",
+    room: "room",
+  };
+  let conferencing: Conferencing | undefined;
+  if (opts.conferencing) {
+    conferencing = confAlias[opts.conferencing.toLowerCase()];
+    if (!conferencing) {
+      error(`Invalid --conferencing "${opts.conferencing}". Use: ${validConferencing.join(", ")} (or zoom/meet).`);
+      process.exit(1);
+    }
+  } else if (opts.room) {
+    conferencing = "room";
+  }
   const invite = await createOpenInvite({
     slots,
     title: opts.title,
@@ -1167,6 +1223,8 @@ async function handleOpenInvite(opts: CliOptions) {
     calendar: opts.calendar,
     timeZone: opts.timeZone,
     disableAvailabilityCheck: opts.noAvailabilityCheck,
+    conferencing,
+    room: opts.room,
     port: opts.port,
   });
 
@@ -1185,6 +1243,7 @@ async function handleOpenInvite(opts: CliOptions) {
   } else {
     success(`Open Invite created: ${colors.cyan}${invite.link}${colors.reset}`);
     info(`${invite.title} · ${invite.durations.join("/")} min · ${invite.timeZone}`);
+    info(`Conferencing: ${invite.conferencing || "none"}`);
     if (bookable !== null) {
       info(`Verified: link resolves with ${bookable} bookable slot${bookable === 1 ? "" : "s"}.`);
     } else {
