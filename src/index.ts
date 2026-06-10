@@ -37,4 +37,18 @@ export {
   isMorgenRunning,
 } from "./morgen-cdp.ts";
 export type { SessionInfo, ConnectionSource } from "./morgen-cdp.ts";
+export {
+  getFirebaseSession,
+  authenticateFirebase,
+  FIREBASE_PROJECT_ID,
+} from "./morgen-firebase.ts";
+export type { FirebaseSession, FirebaseCredentials } from "./morgen-firebase.ts";
+export {
+  createOpenInvite,
+  listOpenInvites,
+  deleteOpenInvite,
+  fetchBookingInfo,
+  parseSlots,
+} from "./open-invite.ts";
+export type { OpenInvite, OpenInviteSlot, CreateOpenInviteInput } from "./open-invite.ts";
 export type * from "./types.ts";

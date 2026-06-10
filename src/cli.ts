@@ -26,6 +26,14 @@ import {
   findFreeSlots,
 } from "./calendars";
 import { sendChat } from "./chat";
+import {
+  createOpenInvite,
+  listOpenInvites,
+  deleteOpenInvite,
+  fetchBookingInfo,
+  parseSlots,
+  type OpenInvite,
+} from "./open-invite";
 import { MorgenApiError } from "./morgen-api";
 import { authenticate } from "./morgen-cdp";
 import type { MorgenTask, MorgenEvent, MorgenCalendar, CreateTaskInput, UpdateTaskInput } from "./types";
@@ -101,6 +109,10 @@ interface CliOptions {
   onlyPrimary?: boolean;
   port?: number;
   ndjson?: boolean;
+  // Open Invite options
+  slots?: string;
+  calendar?: string;
+  noAvailabilityCheck?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +152,7 @@ function parseArgs(args: string[]): CliOptions {
       if (key === "all") { opts.all = true; i++; continue; }
       if (key === "all-day") { opts.allDay = true; i++; continue; }
       if (key === "only-primary") { opts.onlyPrimary = true; i++; continue; }
+      if (key === "no-availability-check") { opts.noAvailabilityCheck = true; i++; continue; }
 
       const next = args[i + 1];
       if (next !== undefined) {
@@ -191,7 +204,9 @@ function setNamedArg(opts: CliOptions, key: string, value: string): void {
     case "parent": opts.parent = value; break;
     case "account": opts.account = value; break;
     // Calendar/event options
-    case "calendar": case "calendar-id": opts.calendarId = value; break;
+    case "calendar": opts.calendarId = value; opts.calendar = value; break;
+    case "calendar-id": opts.calendarId = value; break;
+    case "slots": opts.slots = value; break;
     case "start": opts.start = value; break;
     case "end": opts.end = value; break;
     case "timezone": case "tz": opts.timeZone = value; break;
@@ -277,6 +292,9 @@ ${colors.bold}COMMANDS${colors.reset}
   ${colors.cyan}calendar update${colors.reset} <id> Update an event
   ${colors.cyan}calendar delete${colors.reset} <id> Delete an event
   ${colors.cyan}calendar free${colors.reset}      Find free time slots (--start, --end)
+  ${colors.cyan}open-invite${colors.reset}        Create a one-off booking link (--slots, --title)
+  ${colors.cyan}open-invite list${colors.reset}   List your open invites (one-time booking links)
+  ${colors.cyan}open-invite delete${colors.reset} <href> Delete an open invite
   ${colors.cyan}chat${colors.reset} <prompt>       Chat with Morgen AI assistant
   ${colors.cyan}help${colors.reset}               Show this help message
 
@@ -302,6 +320,9 @@ ${colors.bold}OPTIONS${colors.reset}
   --attendees <emails> Comma-separated attendee emails
   --all-day           Create an all-day event
   --min-minutes <n>   Minimum free slot duration (default: 30)
+  --slots <windows>   Open Invite: proposed windows "startISO/endISO,..." (UTC or with offset)
+  --calendar <name>   Open Invite: calendar to host the booked event (partial name match)
+  --no-availability-check  Open Invite: offer the windows without checking live conflicts
   --calendars <names> Filter: only include these calendars (partial name match)
   --exclude-calendars <names> Filter: exclude these calendars (partial name match)
   --only-primary      Filter: only primary calendar (for chat)
@@ -346,6 +367,12 @@ ${colors.bold}EXAMPLES${colors.reset}
 
   ${colors.dim}# Find free time slots${colors.reset}
   morgen calendar free --start 2026-02-10T09:00:00 --end 2026-02-10T17:00:00
+
+  ${colors.dim}# Mint a one-off booking link offering two windows, 30-min meeting${colors.reset}
+  morgen open-invite --title "Intro call" --duration 30 \\
+    --slots "2026-06-12T14:00:00Z/2026-06-12T17:00:00Z,2026-06-13T18:00:00Z/2026-06-13T20:00:00Z"
+  morgen open-invite list
+  morgen open-invite delete <href>
 
   ${colors.dim}# Chat with Morgen AI${colors.reset}
   morgen chat "What is on my calendar today?"
@@ -1066,6 +1093,109 @@ async function handleChat(opts: CliOptions) {
 }
 
 // ---------------------------------------------------------------------------
+// Open Invite handler
+// ---------------------------------------------------------------------------
+function formatOpenInvite(inv: OpenInvite): string {
+  const slotLines = inv.slots
+    .map((s) => {
+      const [start, end] = s.split("/");
+      return `    ${colors.dim}${start} → ${end}${colors.reset}`;
+    })
+    .join("\n");
+  return (
+    `${colors.bold}${inv.title || "(untitled)"}${colors.reset}  ${colors.dim}${inv.durations.join("/")}min${colors.reset}\n` +
+    `  ${colors.cyan}${inv.link}${colors.reset}\n` +
+    (slotLines ? slotLines + "\n" : "") +
+    `  ${colors.dim}${inv.providerId}${colors.reset}`
+  );
+}
+
+async function handleOpenInvite(opts: CliOptions) {
+  const sub = opts.subCommand;
+
+  // list
+  if (sub === "list") {
+    const invites = await listOpenInvites(opts.port);
+    if (opts.ndjson) {
+      for (const inv of invites) printNdjson(inv);
+    } else if (opts.json) {
+      console.log(JSON.stringify(invites, null, 2));
+    } else if (invites.length === 0) {
+      console.log(`${colors.dim}No open invites${colors.reset}`);
+    } else {
+      console.log(invites.map(formatOpenInvite).join("\n\n"));
+    }
+    return;
+  }
+
+  // delete <href|id>
+  if (sub === "delete" || sub === "remove" || sub === "rm") {
+    const ref = opts.positional || opts.restArgs[1];
+    if (!ref) {
+      error("Usage: morgen open-invite delete <href|id>");
+      process.exit(1);
+    }
+    const ok = await deleteOpenInvite(ref, opts.port);
+    if (!ok) {
+      error(`No open invite found matching "${ref}"`);
+      process.exit(1);
+    }
+    if (opts.json || opts.ndjson) {
+      const out = { deleted: true, ref };
+      opts.ndjson ? printNdjson(out) : console.log(JSON.stringify(out));
+    } else {
+      success(`Deleted open invite ${ref}`);
+    }
+    return;
+  }
+
+  // create (default) — requires --slots
+  if (!opts.slots) {
+    error("Usage: morgen open-invite --slots \"<startISO>/<endISO>,...\" [--title T] [--duration 30]");
+    info("Slots are proposed availability WINDOWS; the invitee books a --duration-sized slot inside them.");
+    process.exit(1);
+  }
+
+  const slots = parseSlots(opts.slots);
+  const duration = opts.duration ? parseInt(opts.duration, 10) : 30;
+  const invite = await createOpenInvite({
+    slots,
+    title: opts.title,
+    description: opts.description,
+    location: opts.location,
+    duration: Number.isNaN(duration) ? 30 : duration,
+    calendar: opts.calendar,
+    timeZone: opts.timeZone,
+    disableAvailabilityCheck: opts.noAvailabilityCheck,
+    port: opts.port,
+  });
+
+  // Verify the minted link resolves before reporting success.
+  let bookable: number | null = null;
+  try {
+    const info = await fetchBookingInfo(invite.href);
+    bookable = info?.slots?.length ?? null;
+  } catch {
+    bookable = null;
+  }
+
+  if (opts.json || opts.ndjson) {
+    const out = { ...invite, bookableSlots: bookable };
+    opts.ndjson ? printNdjson(out) : console.log(JSON.stringify(out, null, 2));
+  } else {
+    success(`Open Invite created: ${colors.cyan}${invite.link}${colors.reset}`);
+    info(`${invite.title} · ${invite.durations.join("/")} min · ${invite.timeZone}`);
+    if (bookable !== null) {
+      info(`Verified: link resolves with ${bookable} bookable slot${bookable === 1 ? "" : "s"}.`);
+    } else {
+      console.error(
+        `${colors.yellow}⚠${colors.reset} Could not verify the link yet (it may take a moment to propagate).`
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main entry
 // ---------------------------------------------------------------------------
 async function main() {
@@ -1089,6 +1219,7 @@ async function main() {
     if (opts.command === "accounts") { await handleAccounts(opts); return; }
     if (opts.command === "tasks") { await handleTasks(opts); return; }
     if (opts.command === "calendar") { await handleCalendar(opts); return; }
+    if (opts.command === "open-invite" || opts.command === "invite") { await handleOpenInvite(opts); return; }
 
     if (opts.command === "chat") {
       await handleChat(opts);

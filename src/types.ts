@@ -40,6 +40,11 @@ export interface MorgenCalendar {
   name: string;
   color?: string;
   sortOrder?: number;
+  isDefault?: boolean;
+  ownedBy?: {
+    name?: string;
+    email?: string;
+  };
   myRights?: {
     mayRead?: boolean;
     mayReadItems?: boolean;
