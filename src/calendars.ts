@@ -243,10 +243,18 @@ export async function findFreeSlots(options: {
     (e) => !e.showWithoutTime && e.freeBusyStatus !== "free"
   );
 
-  // Convert events to busy intervals [start, end] in ms
+  // Convert events to busy intervals [start, end] in ms.
+  //
+  // Morgen-created bookings (open-invite / scheduling-poll / task-event style)
+  // come back with no end time (`end: null`) and a falsy or zero `duration`.
+  // Parsing that yields a zero-width interval [start, start] that subtracts
+  // nothing — so Morgen's own booked events were invisible to the free-finder
+  // and their time got reported as free (the double-book bug). Treat any busy
+  // timed event with no usable duration as blocking a default meeting length,
+  // matching how the Morgen UI renders these bookings.
   const busyIntervals: [number, number][] = timedEvents.map((e) => {
     const startMs = new Date(e.start).getTime();
-    const durationMs = parseDurationToMs(e.duration);
+    const durationMs = parseDurationToMs(e.duration) || DEFAULT_BUSY_MS;
     return [startMs, startMs + durationMs];
   });
 
@@ -315,7 +323,15 @@ export async function findFreeSlots(options: {
 // Duration helpers
 // ---------------------------------------------------------------------------
 
-function parseDurationToMs(iso: string): number {
+/**
+ * Default block length (ms) for a busy timed event that has no usable
+ * duration / end time. One hour is a sane meeting default and ensures such
+ * events still remove time from the free-finder rather than being skipped.
+ */
+const DEFAULT_BUSY_MS = 60 * 60 * 1000;
+
+function parseDurationToMs(iso: string | null | undefined): number {
+  if (!iso) return 0;
   const match = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
   if (!match) return 0;
   const hours = parseInt(match[1] || "0");
