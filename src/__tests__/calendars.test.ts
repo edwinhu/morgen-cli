@@ -299,43 +299,67 @@ describe("calendars module", () => {
   });
 
   // Regression: 2026-06-18 "Edwin Hu / Bobby Bishop" near double-book.
-  // Morgen-created bookings come back with end:null and a falsy/zero duration.
-  // The free-finder used to compute a zero-width busy interval for these and
-  // report the slot as free, hiding Morgen's own booked events. A busy event
-  // with no usable duration must still remove its slot from the free output.
-  it("findFreeSlots blocks busy events with null/missing end (Morgen bookings)", async () => {
+  // Real Morgen booking shape: end:null, but duration IS present ("PT30M"),
+  // start carries a UTC offset, and the caller passes a naive --timezone
+  // window. Two bugs combined: (1) the free-finder parsed the naive window with
+  // machine-local Date(), and (2) the fetch window ignored the timezone — so
+  // the ET bookings sat outside a mis-parsed range and were reported free.
+  // The window must be interpreted in --timezone and end derived from duration.
+  it("findFreeSlots blocks null-end bookings using duration in the requested timezone", async () => {
     mockFetchWithCalendarsAndEvents([
+      {
+        "@type": "Event",
+        id: "ev-bishara",
+        calendarId: "cal-work",
+        title: "Edwin Hu / Philip Bishara",
+        start: "2026-06-18T11:30:00-04:00", // 11:30 ET
+        end: null,
+        duration: "PT30M",
+        timeZone: "America/New_York",
+        showWithoutTime: false,
+        freeBusyStatus: "busy",
+      },
       {
         "@type": "Event",
         id: "ev-bobby-bishop",
         calendarId: "cal-work",
         title: "Edwin Hu / Bobby Bishop",
-        start: "2026-06-18T16:00:00Z", // 12:00 America/New_York
-        // No usable duration — Morgen booking with end:null
-        duration: "",
+        start: "2026-06-18T12:00:00-04:00", // 12:00 ET
+        end: null,
+        duration: "PT30M",
         timeZone: "America/New_York",
         showWithoutTime: false,
         freeBusyStatus: "busy",
       },
     ]);
 
+    // Naive wall-clock window in America/New_York (as the CLI passes it).
     const slots = await findFreeSlots({
-      start: "2026-06-18T14:00:00Z", // 10:00 ET
-      end: "2026-06-18T20:00:00Z", // 16:00 ET
-      minMinutes: 60,
+      start: "2026-06-18T11:00:00",
+      end: "2026-06-18T14:00:00",
+      minMinutes: 30,
+      timeZone: "America/New_York",
     });
 
-    // The 12:00 booking must block (defaults to 1h: 12:00-13:00). It must NOT
-    // appear inside any free slot. Before the fix, free wrongly reported
-    // 12:00-16:00 as open.
+    // Neither 11:30 (Bishara) nor 12:00 (Bishop) may fall inside a free slot.
+    const bookings = ["2026-06-18T15:30:00Z", "2026-06-18T16:00:00Z"].map((s) =>
+      new Date(s).getTime()
+    );
     for (const slot of slots) {
-      const startMs = new Date(slot.start + "Z").getTime();
-      const endMs = new Date(slot.end + "Z").getTime();
-      const bookingMs = new Date("2026-06-18T16:00:00Z").getTime();
-      expect(bookingMs >= startMs && bookingMs < endMs).toBe(false);
+      const startMs = new Date(slot.start).getTime();
+      const endMs = new Date(slot.end).getTime();
+      for (const b of bookings) {
+        expect(b >= startMs && b < endMs).toBe(false);
+      }
     }
-    // Expected free: 10:00-12:00 (before) and 13:00-16:00 (after default block).
+
+    // Expected free (ET): 11:00-11:30 before, 12:30-14:00 after the merged
+    // 11:30-12:30 busy block (each booking is PT30M).
     expect(slots).toHaveLength(2);
+    expect(slots[0].start).toBe("2026-06-18T11:00:00-04:00");
+    expect(slots[0].end).toBe("2026-06-18T11:30:00-04:00");
+    expect(slots[1].start).toBe("2026-06-18T12:30:00-04:00");
+    expect(slots[1].end).toBe("2026-06-18T14:00:00-04:00");
   });
 
   it("findFreeSlots respects minMinutes filter", async () => {
