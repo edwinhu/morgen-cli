@@ -1,6 +1,6 @@
 {
   "name": "morgen-cli",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "module": "src/index.ts",
   "type": "module",
   "private": true,
