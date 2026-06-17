@@ -52,6 +52,36 @@ export function formatTimeForDisplay(
   return `${parts.hour}:${parts.minute}`;
 }
 
+/**
+ * Resolve a user-supplied datetime string to absolute UTC milliseconds.
+ *
+ * - If the string carries an explicit UTC offset or trailing 'Z', it is an
+ *   absolute instant and used as-is.
+ * - Otherwise it is a floating wall-clock time, interpreted in `tz`
+ *   (or as UTC when no `tz` is given).
+ * - A date-only string (no "T") is expanded to start- or end-of-day per
+ *   `endOfDay`.
+ *
+ * This is what makes `--timezone` affect the *interpretation* of the
+ * free-finder window, not just output formatting.
+ */
+export function resolveToUtcMs(
+  input: string,
+  tz?: string,
+  endOfDay = false,
+): number {
+  const tIdx = input.indexOf("T");
+  const timePart = tIdx >= 0 ? input.slice(tIdx + 1) : "";
+  const hasOffset = /[zZ]$/.test(timePart) || /[+-]\d{2}:?\d{2}$/.test(timePart);
+  if (hasOffset) return new Date(input).getTime();
+
+  let s = input;
+  if (tIdx < 0) s = s + (endOfDay ? "T23:59:59" : "T00:00:00");
+
+  if (tz) return floatingLocalToUtcMs(s, tz);
+  return new Date(s + "Z").getTime();
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------

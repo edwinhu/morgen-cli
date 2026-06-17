@@ -12,7 +12,7 @@ import type {
   EventListResponse,
   CreateEventInput,
 } from "./types";
-import { convertToTimezone } from "./time";
+import { convertToTimezone, resolveToUtcMs } from "./time";
 
 // ---------------------------------------------------------------------------
 // Calendar cache (avoids repeated /calendars/list calls within one session)
@@ -232,9 +232,18 @@ export async function findFreeSlots(options: {
   minMinutes?: number;
   timeZone?: string;
 }): Promise<FreeSlot[]> {
+  // Resolve the requested window to absolute UTC instants, interpreting naive
+  // wall-clock input in `timeZone`. The events carry real UTC offsets, so the
+  // window MUST be resolved the same way — otherwise busy events sit outside a
+  // mis-parsed range (and aren't even fetched) and their time is wrongly
+  // reported free. The fetch window is driven by these same instants so the
+  // API returns the events that actually overlap the requested local window.
+  const rangeStart = resolveToUtcMs(options.start, options.timeZone, false);
+  const rangeEnd = resolveToUtcMs(options.end, options.timeZone, true);
+
   const events = await listEvents({
-    start: options.start,
-    end: options.end,
+    start: new Date(rangeStart).toISOString(),
+    end: new Date(rangeEnd).toISOString(),
     calendarIds: options.calendarIds,
   });
 
@@ -253,7 +262,10 @@ export async function findFreeSlots(options: {
   // timed event with no usable duration as blocking a default meeting length,
   // matching how the Morgen UI renders these bookings.
   const busyIntervals: [number, number][] = timedEvents.map((e) => {
-    const startMs = new Date(e.start).getTime();
+    // e.start usually carries a UTC offset; if it's floating, interpret it in
+    // the event's own timeZone so the instant is correct regardless of machine
+    // locale.
+    const startMs = resolveToUtcMs(e.start, e.timeZone);
     const durationMs = parseDurationToMs(e.duration) || DEFAULT_BUSY_MS;
     return [startMs, startMs + durationMs];
   });
@@ -272,9 +284,7 @@ export async function findFreeSlots(options: {
     }
   }
 
-  // Find free slots between busy intervals
-  const rangeStart = new Date(options.start).getTime();
-  const rangeEnd = new Date(options.end).getTime();
+  // Find free slots between busy intervals (rangeStart/rangeEnd resolved above)
   const minMs = (options.minMinutes ?? 30) * 60 * 1000;
 
   // Format timestamps: if timezone requested, convert; otherwise floating UTC
