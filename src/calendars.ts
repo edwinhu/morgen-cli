@@ -62,6 +62,68 @@ export function decodeEventId(id: string): {
 }
 
 // ---------------------------------------------------------------------------
+// JSCalendar payload helpers (participants & locations)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a JSCalendar `participants` map from attendee emails.
+ *
+ * Morgen's API (JMAP/JSCalendar, RFC 8984) expects `participants` as a keyed
+ * MAP of Participant objects — NOT an array. Sending an array (or nothing) is
+ * silently dropped, so guests never get attached and no invites are sent.
+ *
+ * Each participant is keyed by the base64url-encoded email (matching the keys
+ * Morgen itself returns) and carries `roles.attendee`, `participationStatus`,
+ * and `expectReply: true` so the calendar provider (Google/O365) emails an
+ * invitation to the guest.
+ */
+export function buildParticipants(
+  emails: string[]
+): Record<string, unknown> | undefined {
+  const participants: Record<string, unknown> = {};
+  for (const raw of emails) {
+    const email = raw.trim();
+    if (!email) continue;
+    const key = Buffer.from(email, "utf8")
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+    participants[key] = {
+      "@type": "Participant",
+      email,
+      roles: { attendee: true },
+      participationStatus: "needs-action",
+      expectReply: true,
+    };
+  }
+  return Object.keys(participants).length > 0 ? participants : undefined;
+}
+
+/** Split a comma-separated attendee string into a participants map. */
+export function participantsFromCsv(
+  csv: string | undefined
+): Record<string, unknown> | undefined {
+  if (!csv) return undefined;
+  return buildParticipants(csv.split(","));
+}
+
+/**
+ * Build a JSCalendar `locations` map from a single location string.
+ *
+ * The API requires `locations` to be an OBJECT (a keyed map), not a string or
+ * array — sending an array 400s with "locations must be an object". Morgen
+ * keys locations by a numeric string ("1"); using any other key (e.g. "loc1")
+ * is accepted but silently fails to persist on Google calendars.
+ */
+export function buildLocations(
+  location: string | undefined
+): Record<string, unknown> | undefined {
+  if (!location) return undefined;
+  return { "1": { "@type": "Location", name: location } };
+}
+
+// ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
 

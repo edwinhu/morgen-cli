@@ -175,6 +175,10 @@ export interface CreateEventInput {
   timeZone: string;
   showWithoutTime: boolean;
   description?: string;
+  /** JSCalendar participants map (keyed by base64url email). */
+  participants?: Record<string, unknown>;
+  /** JSCalendar locations map (keyed by numeric string, e.g. "1"). */
+  locations?: Record<string, unknown>;
   "morgen.so:metadata"?: {
     taskId?: string;
     isAutoScheduled?: boolean;

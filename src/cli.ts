@@ -24,6 +24,8 @@ import {
   updateEvent,
   deleteEvent,
   findFreeSlots,
+  participantsFromCsv,
+  buildLocations,
 } from "./calendars";
 import { sendChat } from "./chat";
 import {
@@ -916,6 +918,9 @@ async function handleCalendar(opts: CliOptions) {
         : `PT${mins}M`;
     }
 
+    const participants = participantsFromCsv(opts.attendees);
+    const locations = buildLocations(opts.location);
+
     const id = await createEvent({
       accountId: cal.accountId,
       calendarId: cal.id,
@@ -925,6 +930,8 @@ async function handleCalendar(opts: CliOptions) {
       timeZone: tz,
       showWithoutTime: opts.allDay ?? false,
       ...(opts.description ? { description: opts.description } : {}),
+      ...(participants ? { participants } : {}),
+      ...(locations ? { locations } : {}),
     });
 
     if (opts.ndjson) {
@@ -946,7 +953,9 @@ async function handleCalendar(opts: CliOptions) {
     const body: Record<string, unknown> = { id: opts.positional };
     if (opts.title) body.title = opts.title;
     if (opts.description) body.description = opts.description;
-    if (opts.location) body.locations = [{ name: opts.location }];
+    if (opts.location) body.locations = buildLocations(opts.location);
+    const updateParticipants = participantsFromCsv(opts.attendees);
+    if (updateParticipants) body.participants = updateParticipants;
 
     // API requires start, duration, timeZone, showWithoutTime together
     if (opts.start) {

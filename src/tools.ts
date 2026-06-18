@@ -16,6 +16,8 @@ import {
   updateEvent,
   deleteEvent,
   resetCalendarCache as resetCalCache,
+  participantsFromCsv,
+  buildLocations,
 } from "./calendars";
 import {
   listTasks,
@@ -417,11 +419,8 @@ async function executeEventCreate(args: {
     showWithoutTime: args.isAllDay ?? false,
   };
 
-  if (args.attendees) {
-    body.participants = args.attendees.split(",").map((email: string) => ({
-      email: email.trim(),
-    }));
-  }
+  const participants = participantsFromCsv(args.attendees);
+  if (participants) body.participants = participants;
 
   if (args.taskId) {
     body["morgen.so:metadata"] = {
@@ -446,7 +445,7 @@ async function executeEventUpdate(args: {
   const body: Record<string, unknown> = { id: args.id };
   if (args.summary) body.title = args.summary;
   if (args.description) body.description = args.description;
-  if (args.location) body.locations = [{ name: args.location }];
+  if (args.location) body.locations = buildLocations(args.location);
   if (args.start) body.start = args.start;
   if (args.start && args.end) {
     const durationMs =
