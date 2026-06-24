@@ -18,6 +18,7 @@ import {
   resetCalendarCache as resetCalCache,
   participantsFromCsv,
   buildLocations,
+  buildAlerts,
 } from "./calendars";
 import {
   listTasks,
@@ -123,6 +124,11 @@ export const TOOL_DEFINITIONS = [
             description:
               "If scheduling a task on the calendar, provide the task ID here. This links the event to the task so it can be completed from the calendar.",
           },
+          alerts: {
+            type: "string",
+            description:
+              'Comma-separated reminder lead times before the event start (e.g. "30m,10m,1h,1d"). Use "0" or "at-time" for an alert at the event start.',
+          },
         },
         required: ["summary", "start", "end", "timeZone"],
         additionalProperties: false,
@@ -158,6 +164,11 @@ export const TOOL_DEFINITIONS = [
             description: "New end time in ISO format without timezone offset.",
           },
           isAllDay: { type: "boolean", description: "Whether all-day event." },
+          alerts: {
+            type: "string",
+            description:
+              'Comma-separated reminder lead times before the event start (e.g. "30m,10m"). Use "0" or "at-time" for an alert at the event start. Added alongside any existing alerts (merged by the server).',
+          },
         },
         required: ["id"],
         additionalProperties: false,
@@ -389,6 +400,7 @@ async function executeEventCreate(args: {
   isAllDay?: boolean;
   attendees?: string;
   taskId?: string;
+  alerts?: string;
 }): Promise<string> {
   const calendars = await listCalendars();
   const cal = args.calendarId
@@ -422,6 +434,9 @@ async function executeEventCreate(args: {
   const participants = participantsFromCsv(args.attendees);
   if (participants) body.participants = participants;
 
+  const alerts = buildAlerts(args.alerts);
+  if (alerts) body.alerts = alerts;
+
   if (args.taskId) {
     body["morgen.so:metadata"] = {
       taskId: args.taskId,
@@ -441,6 +456,7 @@ async function executeEventUpdate(args: {
   start?: string;
   end?: string;
   isAllDay?: boolean;
+  alerts?: string;
 }): Promise<string> {
   const body: Record<string, unknown> = { id: args.id };
   if (args.summary) body.title = args.summary;
@@ -457,6 +473,8 @@ async function executeEventUpdate(args: {
       hours > 0 ? `PT${hours}H${m > 0 ? m + "M" : ""}` : `PT${m}M`;
   }
   if (args.isAllDay !== undefined) body.showWithoutTime = args.isAllDay;
+  const alerts = buildAlerts(args.alerts);
+  if (alerts) body.alerts = alerts;
 
   await updateEvent(body);
   return JSON.stringify({ success: true });
