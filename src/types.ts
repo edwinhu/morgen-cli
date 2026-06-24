@@ -75,6 +75,8 @@ export interface MorgenEvent {
   freeBusyStatus?: string;
   privacy?: string;
   recurrenceRules?: string[];
+  /** JSCalendar alerts map (keyed by arbitrary string) as returned by /events/list. */
+  alerts?: Record<string, unknown>;
 }
 
 export interface MorgenParticipant {
@@ -179,6 +181,8 @@ export interface CreateEventInput {
   participants?: Record<string, unknown>;
   /** JSCalendar locations map (keyed by numeric string, e.g. "1"). */
   locations?: Record<string, unknown>;
+  /** JSCalendar alerts map (keyed by arbitrary string); each is an Alert with an OffsetTrigger. */
+  alerts?: Record<string, unknown>;
   "morgen.so:metadata"?: {
     taskId?: string;
     isAutoScheduled?: boolean;

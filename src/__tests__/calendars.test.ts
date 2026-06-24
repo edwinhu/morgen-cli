@@ -4,7 +4,46 @@ import {
   listEvents,
   findFreeSlots,
   resetCalendarCache,
+  buildAlerts,
+  parseAlertOffset,
 } from "../calendars";
+
+describe("buildAlerts / parseAlertOffset", () => {
+  it("parses unit tokens into negative ISO 8601 offsets", () => {
+    expect(parseAlertOffset("30m")).toBe("-PT30M");
+    expect(parseAlertOffset("2h")).toBe("-PT2H");
+    expect(parseAlertOffset("1d")).toBe("-P1D");
+    expect(parseAlertOffset("15")).toBe("-PT15M"); // bare number defaults to minutes
+  });
+
+  it("treats 0 / at-time as an offset at the event start", () => {
+    expect(parseAlertOffset("0")).toBe("PT0S");
+    expect(parseAlertOffset("at-time")).toBe("PT0S");
+  });
+
+  it("throws on invalid lead-time tokens", () => {
+    expect(() => parseAlertOffset("soon")).toThrow();
+    expect(() => parseAlertOffset("30x")).toThrow();
+  });
+
+  it("builds a JSCalendar alerts map from a comma-separated spec", () => {
+    const alerts = buildAlerts("30m,10m") as Record<string, any>;
+    const entries = Object.values(alerts);
+    expect(entries).toHaveLength(2);
+    expect(entries[0]["@type"]).toBe("Alert");
+    expect(entries[0].action).toBe("display");
+    expect(entries[0].trigger["@type"]).toBe("OffsetTrigger");
+    expect(entries[0].trigger.offset).toBe("-PT30M");
+    expect(entries[0].trigger.relativeTo).toBe("start");
+    expect(entries[1].trigger.offset).toBe("-PT10M");
+  });
+
+  it("returns undefined for empty/missing specs", () => {
+    expect(buildAlerts(undefined)).toBeUndefined();
+    expect(buildAlerts("")).toBeUndefined();
+    expect(buildAlerts(" , ")).toBeUndefined();
+  });
+});
 
 describe("calendars module", () => {
   const originalFetch = globalThis.fetch;

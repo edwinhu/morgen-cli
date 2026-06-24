@@ -123,6 +123,62 @@ export function buildLocations(
   return { "1": { "@type": "Location", name: location } };
 }
 
+/**
+ * Parse a single alert lead-time token (e.g. "30m", "2h", "1d", "0", "at-time")
+ * into a negative ISO 8601 duration offset for a JSCalendar OffsetTrigger.
+ *
+ * "0" / "at-time" means fire at the event start (offset "PT0S", no minus sign).
+ * Bare numbers default to minutes. Throws on unparseable input.
+ */
+export function parseAlertOffset(token: string): string {
+  const t = token.trim().toLowerCase();
+  if (t === "" ) throw new Error("Empty alert token");
+  if (t === "0" || t === "at-time" || t === "attime" || t === "at") {
+    return "PT0S";
+  }
+  const m = t.match(/^(\d+)\s*([mhd]?)$/);
+  if (!m) throw new Error(`Invalid alert lead time: "${token}" (use e.g. 30m, 2h, 1d, 0)`);
+  const value = parseInt(m[1], 10);
+  const unit = m[2] || "m";
+  if (value === 0) return "PT0S";
+  switch (unit) {
+    case "m": return `-PT${value}M`;
+    case "h": return `-PT${value}H`;
+    case "d": return `-P${value}D`;
+    default: throw new Error(`Invalid alert unit: "${unit}"`);
+  }
+}
+
+/**
+ * Build a JSCalendar `alerts` map from a comma-separated lead-time spec like
+ * "30m,10m,1h". Each entry becomes a display Alert with an OffsetTrigger
+ * relative to the event start. Returns undefined when no spec is given.
+ *
+ * The map is keyed by arbitrary stable strings; Morgen re-keys alerts on read,
+ * so the keys here only need to be unique within the request.
+ */
+export function buildAlerts(
+  spec: string | undefined
+): Record<string, unknown> | undefined {
+  if (!spec) return undefined;
+  const tokens = spec.split(",").map((s) => s.trim()).filter(Boolean);
+  if (tokens.length === 0) return undefined;
+  const alerts: Record<string, unknown> = {};
+  tokens.forEach((token, i) => {
+    const offset = parseAlertOffset(token);
+    alerts[`alert${i + 1}`] = {
+      "@type": "Alert",
+      action: "display",
+      trigger: {
+        "@type": "OffsetTrigger",
+        offset,
+        relativeTo: "start",
+      },
+    };
+  });
+  return alerts;
+}
+
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------

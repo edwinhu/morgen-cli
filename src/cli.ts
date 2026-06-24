@@ -26,6 +26,7 @@ import {
   findFreeSlots,
   participantsFromCsv,
   buildLocations,
+  buildAlerts,
 } from "./calendars";
 import { sendChat } from "./chat";
 import {
@@ -105,6 +106,7 @@ interface CliOptions {
   timeZone?: string;
   location?: string;
   attendees?: string;
+  alert?: string;
   allDay?: boolean;
   minMinutes?: number;
   // Calendar filtering (applies to calendar events/free/list and chat)
@@ -221,6 +223,7 @@ function setNamedArg(opts: CliOptions, key: string, value: string): void {
     case "timezone": case "tz": opts.timeZone = value; break;
     case "location": opts.location = value; break;
     case "attendees": opts.attendees = value; break;
+    case "alert": case "reminder": opts.alert = value; break;
     case "min-minutes": opts.minMinutes = parseInt(value, 10); break;
     case "port": opts.port = parseInt(value, 10); break;
     // Chat calendar filtering
@@ -328,6 +331,10 @@ ${colors.bold}OPTIONS${colors.reset}
   --timezone <tz>     Timezone (e.g. America/New_York)
   --location <text>   Event location
   --attendees <emails> Comma-separated attendee emails
+  --alert <leads>     Comma-separated reminder lead times before start
+                      (e.g. 30m,10m,1h,1d; "0" or "at-time" = at start).
+                      Alias: --reminder
+  --reminder <leads>  Alias for --alert
   --all-day           Create an all-day event
   --min-minutes <n>   Minimum free slot duration (default: 30)
   --slots <windows>   Open Invite: proposed windows "startISO/endISO,..." (UTC or with offset)
@@ -374,6 +381,8 @@ ${colors.bold}EXAMPLES${colors.reset}
 
   ${colors.dim}# Create a calendar event${colors.reset}
   morgen calendar create --title "Meeting" --start 2026-02-10T14:00:00 --end 2026-02-10T15:00:00
+  morgen calendar create --title "Standup" --start 2026-02-10T09:00:00 --end 2026-02-10T09:15:00 --alert 30m,10m
+  morgen calendar update <event-id> --reminder 1h
 
   ${colors.dim}# Schedule a task on the calendar${colors.reset}
   morgen tasks schedule <task-id> --start 2026-02-10T10:00:00
@@ -920,6 +929,7 @@ async function handleCalendar(opts: CliOptions) {
 
     const participants = participantsFromCsv(opts.attendees);
     const locations = buildLocations(opts.location);
+    const alerts = buildAlerts(opts.alert);
 
     const id = await createEvent({
       accountId: cal.accountId,
@@ -932,6 +942,7 @@ async function handleCalendar(opts: CliOptions) {
       ...(opts.description ? { description: opts.description } : {}),
       ...(participants ? { participants } : {}),
       ...(locations ? { locations } : {}),
+      ...(alerts ? { alerts } : {}),
     });
 
     if (opts.ndjson) {
@@ -956,6 +967,8 @@ async function handleCalendar(opts: CliOptions) {
     if (opts.location) body.locations = buildLocations(opts.location);
     const updateParticipants = participantsFromCsv(opts.attendees);
     if (updateParticipants) body.participants = updateParticipants;
+    const updateAlerts = buildAlerts(opts.alert);
+    if (updateAlerts) body.alerts = updateAlerts;
 
     // API requires start, duration, timeZone, showWithoutTime together
     if (opts.start) {

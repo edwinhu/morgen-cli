@@ -316,7 +316,7 @@ describe("executeTool", () => {
 
     const result = await executeTool(
       "eventCreate",
-      '{"summary":"Work on PR","start":"2026-02-10T10:00:00","end":"2026-02-10T11:00:00","timeZone":"America/New_York"}'
+      '{"summary":"Work on PR","start":"2026-02-10T10:00:00","end":"2026-02-10T11:00:00","timeZone":"America/New_York","alerts":"30m,10m"}'
     );
     const parsed = JSON.parse(result);
 
@@ -327,6 +327,13 @@ describe("executeTool", () => {
     expect(body.title).toBe("Work on PR");
     expect(body.accountId).toBe("acc-1");
     expect(body.calendarId).toBe("cal-1");
+
+    // Alerts should be mapped into the JSCalendar alerts map on the request body
+    const alertEntries = Object.values(body.alerts as Record<string, any>);
+    expect(alertEntries).toHaveLength(2);
+    expect(alertEntries[0].trigger.offset).toBe("-PT30M");
+    expect(alertEntries[0].trigger["@type"]).toBe("OffsetTrigger");
+    expect(alertEntries[1].trigger.offset).toBe("-PT10M");
   });
 
   it("taskDelete calls /v3/tasks/delete with id and cascades linked events", async () => {
