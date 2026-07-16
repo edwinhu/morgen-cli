@@ -56,6 +56,16 @@ describe("classifyTarget", () => {
     expect(classifyTarget(page("file:///opt/Morgen/resources/app.html"))).toBe("electron");
   });
 
+  test("query/fragment cannot make another app look like Morgen", () => {
+    // /morgen/i must scan origin+path only. Scanning the whole URL let a route
+    // or query decide identity — and 1Password's page at #/morgen/settings is
+    // exactly the shape that matters.
+    expect(
+      classifyTarget(page("chrome-extension://abc/app/app.html#/morgen/settings"))
+    ).toBeNull();
+    expect(classifyTarget(page("https://example.com/app.html?next=morgen"))).toBeNull();
+  });
+
   test("another app's app.html is NOT the Morgen desktop app", () => {
     // Real target seen live: 1Password's extension serves an app.html. A bare
     // "app.html" match classified it as Electron, and since Electron ranks

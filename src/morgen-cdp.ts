@@ -121,11 +121,27 @@ export function classifyTarget(t: any): ConnectionSource | null {
   // 1Password's extension serves
   // chrome-extension://<id>/app/app.html#/page/settings, which was being
   // classified as the Morgen desktop app and, since Electron ranks first,
-  // picked ahead of the real web.morgen.so tab. Reading credentials from
-  // 1Password's localStorage then failed the whole refresh.
-  if (url.includes("app.html") && /morgen/i.test(url)) return "electron";
+  // picked ahead of the real web.morgen.so tab.
+  //
+  // Match on origin+path only. Scanning the whole URL lets a query or fragment
+  // decide identity — https://example.com/app.html?next=morgen, or the same
+  // 1Password page at #/morgen/settings, would both come back Electron.
+  return isMorgenAppHtml(url) ? "electron" : null;
+}
 
-  return null;
+/** Is this an app.html served BY Morgen — judged on origin+path, not query/fragment? */
+function isMorgenAppHtml(url: string): boolean {
+  let scope: string;
+  try {
+    const u = new URL(url);
+    if (!u.pathname.includes("app.html")) return false;
+    scope = `${u.protocol}//${u.host}${u.pathname}`;
+  } catch {
+    // Not URL-parseable: fall back to the part before any query/fragment.
+    scope = url.split(/[?#]/)[0] ?? "";
+    if (!scope.includes("app.html")) return false;
+  }
+  return /morgen/i.test(scope);
 }
 
 /**
@@ -230,19 +246,32 @@ async function attachWithTimeout(
   const bounded = withTimeout(attach, what, ms);
   bounded.catch(() => {
     attach.then(
-      (client) => {
-        try {
-          void client.close();
-        } catch {
-          // ignore
-        }
-      },
+      (client) => closeQuietly(client),
       () => {
         // already rejected; nothing to close
       }
     );
   });
   return bounded;
+}
+
+/**
+ * Close without blocking and without throwing.
+ *
+ * Not awaited: a close that never settles would hang the caller after the work
+ * already succeeded. Its rejection is swallowed explicitly — `void client.close()`
+ * inside a try/catch only catches a SYNCHRONOUS throw, so a rejected close()
+ * escaped as an unhandledRejection.
+ */
+function closeQuietly(client: CDP.Client): void {
+  try {
+    const p = client.close() as unknown;
+    if (p && typeof (p as Promise<void>).catch === "function") {
+      (p as Promise<void>).catch(() => {});
+    }
+  } catch {
+    // ignore
+  }
 }
 
 /** Prefer a real diagnostic over a timeout when reporting why every target failed. */
@@ -281,14 +310,22 @@ export async function withMorgenTarget<T>(
   fn: (client: CDP.Client, source: ConnectionSource) => Promise<T>
 ): Promise<T> {
   const host = getCDPHost();
-  const targets = await CDP.List({ host, port });
+  const perCallMs = cdpTimeoutMs();
+  // The budget starts before discovery: a debug endpoint can accept the
+  // connection and never answer /json/list, which would hang before any retry
+  // logic was reached.
+  const end = Date.now() + perCallMs * TARGET_BUDGET_MULTIPLIER;
+  const remaining = () => Math.max(0, end - Date.now());
+
+  const targets = await withTimeout(
+    CDP.List({ host, port }),
+    "listing CDP targets",
+    Math.min(remaining(), perCallMs)
+  );
 
   const ranked = rankTargets(targets);
   if (ranked.length === 0) throw new Error(noTargetHint(port));
 
-  const perCallMs = cdpTimeoutMs();
-  const end = Date.now() + perCallMs * TARGET_BUDGET_MULTIPLIER;
-  const remaining = () => Math.max(0, end - Date.now());
   const errors: unknown[] = [];
 
   for (const { source, target } of ranked) {
@@ -302,17 +339,18 @@ export async function withMorgenTarget<T>(
         `connecting to the ${source} target`,
         Math.min(remaining(), perCallMs)
       );
-      return await fn(client, source);
+      // Bound fn too. Its own calls are bounded individually, but several of
+      // them (connect + creds + email) could otherwise outlast the budget the
+      // loop only re-checks BETWEEN targets.
+      return await withTimeout(
+        fn(client, source),
+        `reading from the ${source} target`,
+        remaining()
+      );
     } catch (err) {
       errors.push(err);
     } finally {
-      if (client) {
-        try {
-          await client.close();
-        } catch {
-          // ignore
-        }
-      }
+      if (client) closeQuietly(client);
     }
   }
   throw bestError(errors, port);
