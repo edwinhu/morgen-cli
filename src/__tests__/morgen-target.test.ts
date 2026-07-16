@@ -12,14 +12,20 @@ describe("classifyTarget", () => {
     expect(classifyTarget(page("file:///opt/Morgen/resources/app.html"))).toBe("electron");
   });
 
-  test("morgen.so is the web app", () => {
+  test("morgen.so is the web app, on any subdomain", () => {
+    // web.morgen.so is what the app actually serves today; app.morgen.so is the
+    // older host. The matcher keys on the bare domain, so both must classify.
+    expect(classifyTarget(page("https://web.morgen.so/"))).toBe("chrome");
     expect(classifyTarget(page("https://app.morgen.so/calendar"))).toBe("chrome");
   });
 
   test("non-page targets are never classified", () => {
-    // A service worker or iframe on the same origin must not win the pick.
-    expect(classifyTarget({ type: "service_worker", url: "https://app.morgen.so/sw.js" })).toBeNull();
-    expect(classifyTarget({ type: "iframe", url: "https://app.morgen.so/frame" })).toBeNull();
+    // A service/shared worker or iframe on the same origin must not win the
+    // pick: it carries no cookies, so a matcher without a type filter can bind
+    // to it and silently yield nothing.
+    expect(classifyTarget({ type: "service_worker", url: "https://web.morgen.so/sw.js" })).toBeNull();
+    expect(classifyTarget({ type: "shared_worker", url: "https://web.morgen.so/worker.js" })).toBeNull();
+    expect(classifyTarget({ type: "iframe", url: "https://web.morgen.so/frame" })).toBeNull();
   });
 
   test("unrelated pages are not classified", () => {
@@ -30,7 +36,7 @@ describe("classifyTarget", () => {
 
 describe("pickTarget", () => {
   test("prefers Electron even when the web app is listed first", () => {
-    const web = page("https://app.morgen.so/calendar");
+    const web = page("https://web.morgen.so/calendar");
     const electron = page("morgen://./app.html");
     const picked = pickTarget([web, electron]);
     expect(picked?.source).toBe("electron");
@@ -38,16 +44,16 @@ describe("pickTarget", () => {
   });
 
   test("falls back to the web app when no Electron target exists (the Linux shape)", () => {
-    const web = page("https://app.morgen.so/calendar");
+    const web = page("https://web.morgen.so/calendar");
     const picked = pickTarget([page("https://example.com"), web]);
     expect(picked?.source).toBe("chrome");
     expect(picked?.target).toBe(web);
   });
 
   test("skips same-origin non-page targets in favour of the real page", () => {
-    const web = page("https://app.morgen.so/calendar");
+    const web = page("https://web.morgen.so/calendar");
     const picked = pickTarget([
-      { type: "service_worker", url: "https://app.morgen.so/sw.js" },
+      { type: "service_worker", url: "https://web.morgen.so/sw.js" },
       web,
     ]);
     expect(picked?.target).toBe(web);

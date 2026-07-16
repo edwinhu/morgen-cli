@@ -1,7 +1,7 @@
 /**
  * Morgen CDP Module
  *
- * Connects to Chrome browser (with app.morgen.so open) via Chrome DevTools
+ * Connects to Chrome browser (with web.morgen.so open) via Chrome DevTools
  * Protocol to extract authentication credentials. The session token enables
  * full integration task CRUD through the Morgen API.
  *
@@ -90,7 +90,7 @@ export function noTargetHint(port: number, platform: string = process.platform):
     `No Morgen target found on port ${port}.\n` +
     "Start either route (quit the app first if already open, so the debug port takes effect):\n" +
     `  Desktop app: ${electronLaunchHint(port, platform)}\n` +
-    `  Web app:     open https://app.morgen.so in a browser started with --remote-debugging-port=${port}`
+    `  Web app:     open https://web.morgen.so in a browser started with --remote-debugging-port=${port}`
   );
 }
 
