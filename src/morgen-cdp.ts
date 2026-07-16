@@ -18,6 +18,7 @@ import { homedir } from "os";
 import {
   cdpPortCandidates,
   cdpTimeoutMs,
+  MAX_CDP_TIMEOUT_MS,
   classifyTarget,
   discoverEndpoint,
   getCDPHost,
@@ -188,10 +189,16 @@ export async function withMorgenTarget<T>(
 ): Promise<T> {
   const host = getCDPHost();
   const perCallMs = cdpTimeoutMs();
+  // Cap the aggregate. cdpTimeoutMs accepts up to setTimeout's 32-bit ceiling,
+  // and multiplying an accepted value could push the budget past it — where the
+  // runtime clamps to ~1ms and every call "times out" instantly. That is the
+  // precise failure cdpTimeoutMs's own clamp exists to prevent; re-introducing
+  // it one multiplication downstream would be a poor joke.
+  const budgetMs = Math.min(perCallMs * TARGET_BUDGET_MULTIPLIER, MAX_CDP_TIMEOUT_MS);
   // The budget starts before discovery: a debug endpoint can accept the
   // connection and never answer /json/list, which would hang before any retry
   // logic was reached.
-  const end = Date.now() + perCallMs * TARGET_BUDGET_MULTIPLIER;
+  const end = Date.now() + budgetMs;
   const remaining = () => Math.max(0, end - Date.now());
 
   // An explicit port is honoured as-is; otherwise probe the desktop app, then

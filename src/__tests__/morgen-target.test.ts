@@ -6,6 +6,7 @@ import {
   noTargetHint,
   withTimeout,
 } from "../morgen-cdp";
+import { hostMatches } from "../cdp-endpoint";
 
 describe("rankTargets", () => {
   const page = (url: string) => ({ type: "page", url });
@@ -180,5 +181,34 @@ describe("noTargetHint", () => {
 
   test("win32 suggests the exe", () => {
     expect(noTargetHint([9253, 9222], "win32")).toContain("Morgen.exe");
+  });
+});
+
+describe("hostMatches — endpoint identity must not be forgeable", () => {
+  test("accepts the domain and its subdomains", () => {
+    expect(hostMatches("https://morgen.so/", "morgen.so")).toBe(true);
+    expect(hostMatches("https://web.morgen.so/calendar", "morgen.so")).toBe(true);
+  });
+
+  test("rejects suffix-confusion hosts", () => {
+    // The bug this guards: includes("morgen.so") matched all of these, and the
+    // winning target gets credential-reading JS executed in it.
+    expect(hostMatches("https://morgen.so.evil.example/", "morgen.so")).toBe(false);
+    expect(hostMatches("https://notmorgen.so/", "morgen.so")).toBe(false);
+  });
+
+  test("rejects query/fragment mentions", () => {
+    expect(hostMatches("https://evil.example/?next=morgen.so", "morgen.so")).toBe(false);
+    expect(hostMatches("https://evil.example/#morgen.so", "morgen.so")).toBe(false);
+  });
+
+  test("rejects non-http(s) schemes and unparseable input", () => {
+    expect(hostMatches("file:///morgen.so/app.html", "morgen.so")).toBe(false);
+    expect(hostMatches("not a url", "morgen.so")).toBe(false);
+  });
+
+  test("classifyTarget inherits the hardening", () => {
+    expect(classifyTarget({ type: "page", url: "https://morgen.so.evil.example/" })).toBeNull();
+    expect(classifyTarget({ type: "page", url: "https://web.morgen.so/" })).toBe("chrome");
   });
 });
