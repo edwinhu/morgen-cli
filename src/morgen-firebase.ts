@@ -16,6 +16,7 @@
 import CDP from "chrome-remote-interface";
 import { resolve } from "path";
 import { homedir } from "os";
+import { pickTarget, noTargetHint } from "./morgen-cdp";
 
 const DEFAULT_PORT = parseInt(process.env.CDP_PORT || "9253", 10);
 const SECURETOKEN_URL = "https://securetoken.googleapis.com/v1/token";
@@ -50,20 +51,13 @@ function getFirebaseFile(): string {
 async function extractFromApp(port: number): Promise<FirebaseCredentials> {
   const host = getCDPHost();
   const targets = await CDP.List({ host, port });
-  const target = targets.find(
-    (t) =>
-      t.type === "page" &&
-      (t.url?.startsWith("morgen://") || t.url?.includes("morgen.so") || t.url?.includes("app.html"))
-  );
-  if (!target) {
-    throw new Error(
-      `No Morgen target found on port ${port}.\n` +
-        "Start the Morgen app (quit it first if already open, so the debug port takes effect):\n" +
-        `  /Applications/Morgen.app/Contents/MacOS/Morgen --remote-debugging-port=${port}`
-    );
-  }
+  // Share morgen-cdp's picker so the Firebase path honours the same
+  // Electron-then-web preference; it previously took whichever target matched
+  // first, which could land on the web app while the desktop app was running.
+  const picked = pickTarget(targets);
+  if (!picked) throw new Error(noTargetHint(port));
 
-  const client = await CDP({ host, port, target });
+  const client = await CDP({ host, port, target: picked.target });
   try {
     const { Runtime } = client;
     const result = await Runtime.evaluate({

@@ -47,11 +47,51 @@ export interface SessionInfo {
 }
 
 /** Classify a CDP target as Morgen Electron, Chrome web app, or neither. */
-function classifyTarget(t: any): ConnectionSource | null {
+export function classifyTarget(t: any): ConnectionSource | null {
   if (t.type !== "page") return null;
-  if (t.url?.startsWith("morgen://")) return "electron";
+  // The desktop app loads morgen://./app.html; some builds surface the bare
+  // app.html URL instead, so accept either as Electron.
+  if (t.url?.startsWith("morgen://") || t.url?.includes("app.html")) return "electron";
   if (t.url?.includes("morgen.so")) return "chrome";
   return null;
+}
+
+/**
+ * Pick the best Morgen target: Electron first (richer credentials via the
+ * electronAPI bridge), else the web app. Shared by the session and Firebase
+ * credential paths so both honour the same preference order.
+ */
+export function pickTarget<T>(targets: T[]): { source: ConnectionSource; target: T } | null {
+  for (const source of ["electron", "chrome"] as const) {
+    const target = targets.find((t) => classifyTarget(t) === source);
+    if (target) return { source, target };
+  }
+  return null;
+}
+
+/** Platform-appropriate command for starting the Morgen desktop app with CDP. */
+function electronLaunchHint(port: number, platform: string = process.platform): string {
+  const bin =
+    platform === "darwin"
+      ? "/Applications/Morgen.app/Contents/MacOS/Morgen"
+      : platform === "win32"
+        ? "%LOCALAPPDATA%\\Programs\\Morgen\\Morgen.exe"
+        : "morgen"; // Linux: .deb/AppImage put `morgen` on PATH
+  return `${bin} --remote-debugging-port=${port}`;
+}
+
+/**
+ * Error text for "no Morgen target". Names both routes — the desktop app
+ * (Electron) and the web app in a browser — since either satisfies the CLI,
+ * and only one of them exists on any given platform.
+ */
+export function noTargetHint(port: number, platform: string = process.platform): string {
+  return (
+    `No Morgen target found on port ${port}.\n` +
+    "Start either route (quit the app first if already open, so the debug port takes effect):\n" +
+    `  Desktop app: ${electronLaunchHint(port, platform)}\n` +
+    `  Web app:     open https://app.morgen.so in a browser started with --remote-debugging-port=${port}`
+  );
 }
 
 /** Check if Morgen is reachable via CDP (Chrome with morgen.so tab or Electron app). */
@@ -59,15 +99,7 @@ export async function isMorgenRunning(port = DEFAULT_PORT): Promise<ConnectionSo
   try {
     const host = getCDPHost();
     const targets = await CDP.List({ host, port });
-    // Prefer Electron if present (richer credentials via electronAPI bridge)
-    for (const t of targets) {
-      const kind = classifyTarget(t);
-      if (kind === "electron") return "electron";
-    }
-    for (const t of targets) {
-      if (classifyTarget(t) === "chrome") return "chrome";
-    }
-    return false;
+    return pickTarget(targets)?.source ?? false;
   } catch {
     return false;
   }
@@ -81,24 +113,11 @@ async function connectToMorgen(port: number): Promise<{ source: ConnectionSource
   const host = getCDPHost();
   const targets = await CDP.List({ host, port });
 
-  // Prefer Electron if present
-  const electronTarget = targets.find((t) => classifyTarget(t) === "electron");
-  if (electronTarget) {
-    const client = await CDP({ host, port, target: electronTarget });
-    return { source: "electron", client };
-  }
-  const chromeTarget = targets.find((t) => classifyTarget(t) === "chrome");
-  if (chromeTarget) {
-    const client = await CDP({ host, port, target: chromeTarget });
-    return { source: "chrome", client };
-  }
+  const picked = pickTarget(targets);
+  if (!picked) throw new Error(noTargetHint(port));
 
-  throw new Error(
-    `No Morgen target found on port ${port}.\n` +
-    "Start one of:\n" +
-    `  Chrome:   nanoclaw-chrome start\n` +
-    `  Electron: /Applications/Morgen.app/Contents/MacOS/Morgen --remote-debugging-port=${port}`
-  );
+  const client = await CDP({ host, port, target: picked.target });
+  return { source: picked.source, client };
 }
 
 /** Extract refresh token and device ID from an existing CDP client. */
