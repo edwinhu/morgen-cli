@@ -166,8 +166,8 @@ describe("authenticate", () => {
       await authenticate(9400);
       expect(true).toBe(false); // should not reach
     } catch (err: any) {
-      expect(err.message).toContain("Chrome:");
-      expect(err.message).toContain("Electron:");
+      expect(err.message).toContain("Desktop app:");
+      expect(err.message).toContain("Web app:");
     }
   });
 });

@@ -356,7 +356,7 @@ ${colors.bold}OPTIONS${colors.reset}
 
 ${colors.bold}AUTH${colors.reset}
   Connects to Chrome via CDP (port 9253 by default) and finds the Morgen tab
-  (app.morgen.so) to extract auth tokens.
+  (web.morgen.so) to extract auth tokens.
 
   Use --port to specify the CDP port (default: 9253 or CDP_PORT env).
   Session tokens are cached in ~/.config/morgen-cli/session.json.
