@@ -207,6 +207,37 @@ describe("hostMatches — endpoint identity must not be forgeable", () => {
     expect(hostMatches("not a url", "morgen.so")).toBe(false);
   });
 
+  test("an http(s) page can never be the Electron desktop app", () => {
+    // Electron ranks FIRST, so a false positive here beats the genuine tab and
+    // gets credential-reading JS run in the impostor. An earlier cut matched
+    // /morgen/i across origin+path and accepted every one of these.
+    for (const url of [
+      "https://evil.example/morgen/app.html",
+      "https://morgen.so.evil.example/app.html",
+      "https://cdn.example/assets/morgen/app.html",
+      "http://localhost:8080/morgen/app.html",
+      "chrome-extension://abc/app/app.html",
+    ]) {
+      expect(classifyTarget({ type: "page", url })).toBeNull();
+    }
+  });
+
+  test("the real desktop app still classifies — a false negative breaks auth", () => {
+    expect(classifyTarget({ type: "page", url: "morgen://./app.html" })).toBe("electron");
+    expect(
+      classifyTarget({ type: "page", url: "file:///opt/Morgen/resources/app.html" })
+    ).toBe("electron");
+  });
+
+  test("an impostor never outranks the real tab", () => {
+    const ranked = rankTargets([
+      { type: "page", url: "https://evil.example/morgen/app.html" },
+      { type: "page", url: "https://web.morgen.so/" },
+    ]);
+    expect(ranked[0]?.source).toBe("chrome");
+    expect((ranked[0]?.target as any).url).toBe("https://web.morgen.so/");
+  });
+
   test("classifyTarget inherits the hardening", () => {
     expect(classifyTarget({ type: "page", url: "https://morgen.so.evil.example/" })).toBeNull();
     expect(classifyTarget({ type: "page", url: "https://web.morgen.so/" })).toBe("chrome");

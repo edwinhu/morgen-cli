@@ -43,18 +43,25 @@ const DEFAULT_CHROME_PORT = 9222;
 /**
  * Is this target the product's Electron desktop app?
  *
- * Morgen's desktop app loads morgen://./app.html. Some builds surface a bare
- * app.html path instead, which must still be Morgen's — a bare "app.html" match
- * is far too broad: 1Password's extension serves
- * chrome-extension://<id>/app/app.html, and matching it made the CLI read
- * credentials from 1Password's localStorage and fail the refresh.
+ * ONLY the app's own scheme (morgen://) or a file:// path from its install dir
+ * can claim this. Deliberately NOT any http(s) URL that happens to mention the
+ * product: a remote page cannot be the local desktop app, and pretending
+ * otherwise is a hole, not a convenience.
  *
- * Matched on origin+path, never query/fragment — otherwise a route like
- * app.html#/morgen/settings decides identity.
+ * Electron ranks FIRST, so a false positive here does not merely add noise — it
+ * beats the genuine tab and gets credential-reading JavaScript executed in the
+ * impostor's origin. An earlier cut matched /morgen/i across origin+path, which
+ * accepted https://evil.example/morgen/app.html and ranked it ahead of the real
+ * web.morgen.so tab. Before that, a bare "app.html" match accepted 1Password's
+ * chrome-extension://<id>/app/app.html and broke refresh outright.
+ *
+ * A file:// URL requires local filesystem access to forge, which is a different
+ * threat model — by then the credential store is already readable.
  */
 function isElectronTarget(url: string): boolean {
   if (url.startsWith("morgen://")) return true;
-  return isProductAppHtml(url, /morgen/i);
+  if (url.startsWith("file://")) return isProductAppHtml(url, /morgen/i);
+  return false;
 }
 
 /** Is this target the product's web app in a browser? */
