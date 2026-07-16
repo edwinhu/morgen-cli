@@ -7,6 +7,8 @@ import { mkdtempSync, rmSync } from "fs";
 let mockTargets: any[] = [];
 let mockCDPClient: any = null;
 let mockListShouldThrow = false;
+/** Optional per-target client factory, for exercising retry across targets. */
+let mockClientForTarget: ((target: any) => any) | null = null;
 
 // Redirect session writes to a per-suite temp dir so tests never touch
 // the user's real ~/.config/morgen-cli/session.json.
@@ -16,7 +18,8 @@ process.on("exit", () => { try { rmSync(TEST_TMP_DIR, { recursive: true, force: 
 
 // ── Mock chrome-remote-interface BEFORE importing module under test ──
 mock.module("chrome-remote-interface", () => {
-  const cdpFn = async (_opts: any) => mockCDPClient;
+  const cdpFn = async (opts: any) =>
+    mockClientForTarget ? mockClientForTarget(opts?.target) : mockCDPClient;
   cdpFn.List = async (_opts: any) => {
     if (mockListShouldThrow) throw new Error("ECONNREFUSED");
     return mockTargets;
@@ -188,5 +191,68 @@ describe("getSessionToken", () => {
     mockTargets = [makeElectronTarget()];
     const token = await getSessionToken(9400);
     expect(token).toBe("ai-tok-xyz");
+  });
+});
+
+describe("target resilience", () => {
+  beforeEach(() => {
+    mockTargets = [];
+    mockCDPClient = null;
+    mockClientForTarget = null;
+    mockListShouldThrow = false;
+  });
+
+  afterEach(() => {
+    mockClientForTarget = null;
+    globalThis.fetch = originalFetch;
+    delete process.env.CDP_TIMEOUT_MS;
+  });
+
+  it("a wedged target does not fail the refresh when another can serve it", async () => {
+    // Two Morgen web targets. The first never answers Runtime.evaluate — the
+    // real failure mode, a busy renderer. The second must still serve it.
+    const wedged = { id: "wedged", type: "page", url: "https://web.morgen.so/wedged" };
+    const good = { id: "good", type: "page", url: "https://web.morgen.so/good" };
+    mockTargets = [wedged, good];
+
+    mockClientForTarget = (target: any) => ({
+      Runtime: {
+        evaluate: async (opts: any) => {
+          if (target?.id === "wedged") return new Promise(() => {}); // never settles
+          if (String(opts.expression).includes("morgen-email")) {
+            return { result: { value: "user@example.com" } };
+          }
+          return {
+            result: { value: JSON.stringify({ refreshToken: "rt", deviceId: "did" }) },
+          };
+        },
+      },
+      close: async () => {},
+    });
+
+    process.env.CDP_TIMEOUT_MS = "150"; // keep the wedged attempt short
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ token: "api-tok", aiToken: "ai-tok", expiresIn: 3600 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+
+    const res = await authenticate(9999);
+    expect(res.email).toBe("user@example.com");
+  });
+
+  it("surfaces the last error when every target is wedged", async () => {
+    mockTargets = [
+      { id: "a", type: "page", url: "https://web.morgen.so/a" },
+      { id: "b", type: "page", url: "https://web.morgen.so/b" },
+    ];
+    mockClientForTarget = () => ({
+      Runtime: { evaluate: async () => new Promise(() => {}) },
+      close: async () => {},
+    });
+    process.env.CDP_TIMEOUT_MS = "100";
+
+    // Must reject with the timeout, not hang and not swallow it.
+    await expect(authenticate(9999)).rejects.toThrow(/timed out after 100ms/);
   });
 });

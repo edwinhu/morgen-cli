@@ -1,5 +1,49 @@
 import { describe, expect, test } from "bun:test";
-import { classifyTarget, pickTarget, noTargetHint, withTimeout } from "../morgen-cdp";
+import {
+  classifyTarget,
+  pickTarget,
+  rankTargets,
+  noTargetHint,
+  withTimeout,
+} from "../morgen-cdp";
+
+describe("rankTargets", () => {
+  const page = (url: string) => ({ type: "page", url });
+
+  test("returns EVERY viable target, not just the best", () => {
+    // The point: one wedged tab must not fail a refresh another tab could serve.
+    const ranked = rankTargets([
+      page("https://web.morgen.so/a"),
+      page("https://example.com"),
+      page("https://web.morgen.so/b"),
+    ]);
+    expect(ranked).toHaveLength(2);
+    expect(ranked.every((r) => r.source === "chrome")).toBe(true);
+  });
+
+  test("Electron ranks ahead of web, wherever it appears in the list", () => {
+    const ranked = rankTargets([
+      page("https://web.morgen.so/"),
+      page("morgen://./app.html"),
+    ]);
+    expect(ranked.map((r) => r.source)).toEqual(["electron", "chrome"]);
+  });
+
+  test("excludes non-page and unrelated targets", () => {
+    const ranked = rankTargets([
+      { type: "service_worker", url: "https://web.morgen.so/sw.js" },
+      { type: "shared_worker", url: "https://web.morgen.so/w.js" },
+      page("https://example.com"),
+      page("https://web.morgen.so/"),
+    ]);
+    expect(ranked).toHaveLength(1);
+  });
+
+  test("empty when nothing matches", () => {
+    expect(rankTargets([page("https://example.com")])).toEqual([]);
+    expect(rankTargets([])).toEqual([]);
+  });
+});
 
 const page = (url: string) => ({ type: "page", url });
 
@@ -8,8 +52,21 @@ describe("classifyTarget", () => {
     expect(classifyTarget(page("morgen://./app.html"))).toBe("electron");
   });
 
-  test("a bare app.html URL still counts as Electron", () => {
+  test("a bare app.html URL still counts as Electron when it is Morgen's", () => {
     expect(classifyTarget(page("file:///opt/Morgen/resources/app.html"))).toBe("electron");
+  });
+
+  test("another app's app.html is NOT the Morgen desktop app", () => {
+    // Real target seen live: 1Password's extension serves an app.html. A bare
+    // "app.html" match classified it as Electron, and since Electron ranks
+    // first it was picked ahead of the real web.morgen.so tab — failing the
+    // refresh against 1Password's localStorage.
+    expect(
+      classifyTarget(
+        page("chrome-extension://aeblfdkhhhdcdjpifhhbdiojplfjncoa/app/app.html#/page/settings")
+      )
+    ).toBeNull();
+    expect(classifyTarget(page("https://example.com/app.html"))).toBeNull();
   });
 
   test("morgen.so is the web app, on any subdomain", () => {

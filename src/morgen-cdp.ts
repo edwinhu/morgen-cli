@@ -18,8 +18,25 @@ import { homedir } from "os";
 
 const API_BASE = "https://api.morgen.so";
 const DEFAULT_PORT = parseInt(process.env.CDP_PORT || "9253", 10);
-/** Upper bound on any single CDP round-trip. Override with CDP_TIMEOUT_MS. */
-const CDP_TIMEOUT_MS = parseInt(process.env.CDP_TIMEOUT_MS || "10000", 10);
+const DEFAULT_CDP_TIMEOUT_MS = 10_000;
+
+/**
+ * Upper bound on any single CDP round-trip. Override with CDP_TIMEOUT_MS.
+ *
+ * Resolved at call time, not import time — the same reason getSessionFile() is:
+ * a module-level const captures the env before a test (or a caller) can set it.
+ *
+ * Validated rather than trusted: parseInt("garbage") is NaN and
+ * setTimeout(fn, NaN) fires immediately, so a typo would make every CDP call
+ * "time out" instantly and every refresh fail with a misleading message.
+ */
+function cdpTimeoutMs(): number {
+  const raw = process.env.CDP_TIMEOUT_MS;
+  if (!raw) return DEFAULT_CDP_TIMEOUT_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_CDP_TIMEOUT_MS;
+  return n;
+}
 
 /**
  * Resolve session file path at call time so tests can redirect via
@@ -56,7 +73,7 @@ export interface SessionInfo {
  * playing YouTube tab never answered a CDP command while four other tabs
  * answered instantly. Without a bound, that is an indefinite hang and no error.
  */
-export function withTimeout<T>(p: Promise<T>, what: string, ms = CDP_TIMEOUT_MS): Promise<T> {
+export function withTimeout<T>(p: Promise<T>, what: string, ms = cdpTimeoutMs()): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new Error(`${what} timed out after ${ms}ms — is the Morgen tab responsive?`)),
@@ -72,24 +89,54 @@ export function withTimeout<T>(p: Promise<T>, what: string, ms = CDP_TIMEOUT_MS)
 /** Classify a CDP target as Morgen Electron, Chrome web app, or neither. */
 export function classifyTarget(t: any): ConnectionSource | null {
   if (t.type !== "page") return null;
-  // The desktop app loads morgen://./app.html; some builds surface the bare
-  // app.html URL instead, so accept either as Electron.
-  if (t.url?.startsWith("morgen://") || t.url?.includes("app.html")) return "electron";
-  if (t.url?.includes("morgen.so")) return "chrome";
+  const url: string | undefined = t.url;
+  if (!url) return null;
+
+  // The desktop app loads morgen://./app.html.
+  if (url.startsWith("morgen://")) return "electron";
+
+  // Some builds surface a bare app.html path instead of the morgen:// scheme.
+  // It must still be Morgen's: a bare `app.html` match is far too broad —
+  // 1Password's extension serves
+  // chrome-extension://<id>/app/app.html#/page/settings, which was being
+  // classified as the Morgen desktop app and, since Electron ranks first,
+  // picked ahead of the real web.morgen.so tab. Reading credentials from
+  // 1Password's localStorage then failed the whole refresh.
+  if (url.includes("app.html") && /morgen/i.test(url)) return "electron";
+
+  if (url.includes("morgen.so")) return "chrome";
   return null;
 }
 
 /**
- * Pick the best Morgen target: Electron first (richer credentials via the
- * electronAPI bridge), else the web app. Shared by the session and Firebase
- * credential paths so both honour the same preference order.
+ * Rank every viable Morgen target, best first: Electron before web (richer
+ * credentials via the electronAPI bridge).
+ *
+ * Every one, not just the best: credentials here live in localStorage and
+ * IndexedDB, so they must be read with Runtime.evaluate against a page target —
+ * there is no browser-level equivalent as there is for cookies. A page routes
+ * through its renderer, and a busy renderer never answers, so committing to a
+ * single target means one wedged tab fails the whole refresh even when another
+ * viable Morgen target is sitting right there. Measured in a sibling tool: 4 of
+ * 8 live page targets were wedged at one point, and which ones drift over time.
+ */
+export function rankTargets<T>(targets: T[]): Array<{ source: ConnectionSource; target: T }> {
+  const ranked: Array<{ source: ConnectionSource; target: T }> = [];
+  for (const source of ["electron", "chrome"] as const) {
+    for (const target of targets) {
+      if (classifyTarget(target) === source) ranked.push({ source, target });
+    }
+  }
+  return ranked;
+}
+
+/**
+ * The single best Morgen target, or null.
+ *
+ * Prefer rankTargets when you can retry — this cannot survive a wedged tab.
  */
 export function pickTarget<T>(targets: T[]): { source: ConnectionSource; target: T } | null {
-  for (const source of ["electron", "chrome"] as const) {
-    const target = targets.find((t) => classifyTarget(t) === source);
-    if (target) return { source, target };
-  }
-  return null;
+  return rankTargets(targets)[0] ?? null;
 }
 
 /** Platform-appropriate command for starting the Morgen desktop app with CDP. */
@@ -129,18 +176,53 @@ export async function isMorgenRunning(port = DEFAULT_PORT): Promise<ConnectionSo
 }
 
 /**
- * Connect to Morgen via CDP. Finds the morgen.so tab in Chrome or the Electron app.
- * Returns the connection source and CDP client.
+ * Run `fn` against the best Morgen target that actually answers.
+ *
+ * Tries each viable target in rank order (Electron, then web), moving on when
+ * one fails or wedges, and always closing the client. Only the CDP work belongs
+ * in `fn` — keep network calls outside, so a backend failure is not retried
+ * against every tab.
+ *
+ * Retrying matters because these credentials can only be read with
+ * Runtime.evaluate against a page target (localStorage/IndexedDB have no
+ * browser-level CDP equivalent, unlike cookies). A page routes through its
+ * renderer and a busy renderer never answers, so committing to one target lets
+ * a single wedged tab fail a refresh that another open Morgen target could have
+ * served. withTimeout bounds each attempt, so a wedge costs a timeout, not the
+ * refresh.
  */
-async function connectToMorgen(port: number): Promise<{ source: ConnectionSource; client: CDP.Client }> {
+async function withMorgenTarget<T>(
+  port: number,
+  fn: (client: CDP.Client, source: ConnectionSource) => Promise<T>
+): Promise<T> {
   const host = getCDPHost();
   const targets = await CDP.List({ host, port });
 
-  const picked = pickTarget(targets);
-  if (!picked) throw new Error(noTargetHint(port));
+  const ranked = rankTargets(targets);
+  if (ranked.length === 0) throw new Error(noTargetHint(port));
 
-  const client = await CDP({ host, port, target: picked.target });
-  return { source: picked.source, client };
+  let lastError: unknown;
+  for (const { source, target } of ranked) {
+    let client: CDP.Client | null = null;
+    try {
+      client = await withTimeout(
+        CDP({ host, port, target }),
+        `connecting to the ${source} target`
+      );
+      return await fn(client, source);
+    } catch (err) {
+      lastError = err;
+    } finally {
+      if (client) {
+        try {
+          await client.close();
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+  throw lastError ?? new Error(noTargetHint(port));
 }
 
 /** Extract refresh token and device ID from an existing CDP client. */
@@ -270,16 +352,14 @@ export async function getSessionToken(port = DEFAULT_PORT): Promise<string> {
   if (cached) return cached.token;
 
   // Extract from running Morgen app or Chrome
-  const conn = await connectToMorgen(port);
-  try {
-    const creds = await extractCredentialsFromClient(conn.client);
-    const session = await exchangeForSession(creds.refreshToken, creds.deviceId);
-    session.source = conn.source;
-    await saveSession(session);
-    return session.token;
-  } finally {
-    await conn.client.close();
-  }
+  const { creds, source } = await withMorgenTarget(port, async (client, source) => ({
+    creds: await extractCredentialsFromClient(client),
+    source,
+  }));
+  const session = await exchangeForSession(creds.refreshToken, creds.deviceId);
+  session.source = source;
+  await saveSession(session);
+  return session.token;
 }
 
 /**
@@ -291,23 +371,22 @@ export async function authenticate(port = DEFAULT_PORT): Promise<{
   expiresAt: number;
   source: ConnectionSource;
 }> {
-  const conn = await connectToMorgen(port);
-  try {
-    const creds = await extractCredentialsFromClient(conn.client);
-    const session = await exchangeForSession(creds.refreshToken, creds.deviceId);
-    session.source = conn.source;
-    await saveSession(session);
+  // Both reads come from whichever target answers, so they cannot disagree.
+  const { creds, email, source } = await withMorgenTarget(port, async (client, source) => {
+    const creds = await extractCredentialsFromClient(client);
+    const result = await withTimeout(
+      client.Runtime.evaluate({
+        expression: `localStorage.getItem("morgen-email") || "unknown"`,
+        returnByValue: true,
+      }),
+      "reading Morgen account email"
+    );
+    return { creds, email: result.result.value as string, source };
+  });
 
-    // Get email from the same connection
-    const { Runtime } = conn.client;
-    const result = await withTimeout(Runtime.evaluate({
-      expression: `localStorage.getItem("morgen-email") || "unknown"`,
-      returnByValue: true,
-    }), "reading Morgen account email");
-    const email = result.result.value;
+  const session = await exchangeForSession(creds.refreshToken, creds.deviceId);
+  session.source = source;
+  await saveSession(session);
 
-    return { email, expiresAt: session.expiresAt, source: conn.source };
-  } finally {
-    await conn.client.close();
-  }
+  return { email, expiresAt: session.expiresAt, source };
 }
