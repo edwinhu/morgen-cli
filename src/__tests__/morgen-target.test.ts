@@ -159,7 +159,7 @@ describe("withTimeout", () => {
 describe("noTargetHint", () => {
   test("names both routes on every platform", () => {
     for (const platform of ["darwin", "linux", "win32"]) {
-      const hint = noTargetHint(9253, platform);
+      const hint = noTargetHint([9253, 9222], platform);
       expect(hint).toContain("Desktop app:");
       expect(hint).toContain("Web app:");
       expect(hint).toContain("9253");
@@ -167,18 +167,18 @@ describe("noTargetHint", () => {
   });
 
   test("linux does not suggest a macOS app bundle", () => {
-    const hint = noTargetHint(9253, "linux");
+    const hint = noTargetHint([9253, 9222], "linux");
     expect(hint).not.toContain("/Applications/");
     expect(hint).toContain("morgen --remote-debugging-port=9253");
   });
 
   test("darwin suggests the app bundle", () => {
-    expect(noTargetHint(9253, "darwin")).toContain(
+    expect(noTargetHint([9253, 9222], "darwin")).toContain(
       "/Applications/Morgen.app/Contents/MacOS/Morgen"
     );
   });
 
   test("win32 suggests the exe", () => {
-    expect(noTargetHint(9253, "win32")).toContain("Morgen.exe");
+    expect(noTargetHint([9253, 9222], "win32")).toContain("Morgen.exe");
   });
 });

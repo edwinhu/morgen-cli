@@ -15,43 +15,35 @@
 import CDP from "chrome-remote-interface";
 import { resolve } from "path";
 import { homedir } from "os";
+import {
+  cdpPortCandidates,
+  cdpTimeoutMs,
+  classifyTarget,
+  discoverEndpoint,
+  getCDPHost,
+  noTargetHint,
+  rankTargets,
+  withTimeout,
+  type ConnectionSource,
+} from "./cdp-endpoint";
+
+export {
+  classifyTarget,
+  rankTargets,
+  withTimeout,
+  noTargetHint,
+  cdpPortCandidates,
+  type ConnectionSource,
+} from "./cdp-endpoint";
 
 const API_BASE = "https://api.morgen.so";
-const DEFAULT_PORT = parseInt(process.env.CDP_PORT || "9253", 10);
-const DEFAULT_CDP_TIMEOUT_MS = 10_000;
-/**
- * How many targets the retry loop may spend its budget on.
- *
- * The budget must exceed a single call's timeout or the first wedged target
- * consumes all of it and retry never happens — CDP_TIMEOUT_MS bounds one CALL,
- * so the loop gets a multiple of it. Realistically there are one or two Morgen
- * targets (rankTargets only returns Morgen ones, never every open tab), so this
- * bounds the pathological case without starving the normal one.
- */
-const TARGET_BUDGET_MULTIPLIER = 3;
-/** setTimeout's 32-bit ceiling; beyond this it silently clamps to 1ms. */
-const MAX_CDP_TIMEOUT_MS = 2_147_483_647;
-
-/**
- * Upper bound on any single CDP round-trip. Override with CDP_TIMEOUT_MS.
- *
- * Resolved at call time, not import time — the same reason getSessionFile() is:
- * a module-level const captures the env before a test (or a caller) can set it.
- *
- * Validated rather than trusted: parseInt("garbage") is NaN and
- * setTimeout(fn, NaN) fires immediately, so a typo would make every CDP call
- * "time out" instantly and every refresh fail with a misleading message.
- */
-function cdpTimeoutMs(): number {
-  const raw = process.env.CDP_TIMEOUT_MS;
-  if (!raw) return DEFAULT_CDP_TIMEOUT_MS;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 1) return DEFAULT_CDP_TIMEOUT_MS;
-  // setTimeout clamps anything past the 32-bit ceiling to 1ms, which would fire
-  // instantly and report "timed out after 2147483648ms" — the exact failure the
-  // validation exists to prevent.
-  if (n > MAX_CDP_TIMEOUT_MS) return DEFAULT_CDP_TIMEOUT_MS;
-  return n;
+export interface SessionInfo {
+  token: string; // AI gateway token (for ai.cf.morgen.so)
+  apiToken: string; // Regular API token (for api.morgen.so)
+  refreshToken: string;
+  deviceId: string;
+  expiresAt: number; // Unix timestamp ms
+  source?: ConnectionSource; // "electron" or "chrome"
 }
 
 /**
@@ -64,110 +56,7 @@ function getSessionFile(): string {
 }
 
 /**
- * Get CDP host from environment or default to localhost
- */
-function getCDPHost(): string {
-  return process.env.CDP_HOST || process.env.HOST_IP || "localhost";
-}
-
-export type ConnectionSource = "electron" | "chrome";
-
-export interface SessionInfo {
-  token: string; // AI gateway token (for ai.cf.morgen.so)
-  apiToken: string; // Regular API token (for api.morgen.so)
-  refreshToken: string;
-  deviceId: string;
-  expiresAt: number; // Unix timestamp ms
-  source?: ConnectionSource; // "electron" or "chrome"
-}
-
-/**
- * Bound a CDP call. Credentials here live in localStorage/IndexedDB, so they
- * must be read with Runtime.evaluate against a page target — there is no
- * browser-level equivalent as there is for cookies. That means a wedged
- * renderer can swallow the call: observed live in a sibling tool, where a
- * playing YouTube tab never answered a CDP command while four other tabs
- * answered instantly. Without a bound, that is an indefinite hang and no error.
- */
-export function withTimeout<T>(p: Promise<T>, what: string, ms = cdpTimeoutMs()): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`${what} timed out after ${ms}ms — is the Morgen tab responsive?`)),
-      ms
-    );
-    p.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e); }
-    );
-  });
-}
-
-/** Classify a CDP target as Morgen Electron, Chrome web app, or neither. */
-export function classifyTarget(t: any): ConnectionSource | null {
-  if (t.type !== "page") return null;
-  const url: string | undefined = t.url;
-  if (!url) return null;
-
-  // The desktop app loads morgen://./app.html.
-  if (url.startsWith("morgen://")) return "electron";
-
-  // The web app is checked before the app.html fallback: web.morgen.so/app.html
-  // is a web tab, not the desktop app, and misreading it would mislabel the
-  // source in `morgen auth` output and in session.json.
-  if (url.includes("morgen.so")) return "chrome";
-
-  // Some builds surface a bare app.html path instead of the morgen:// scheme.
-  // It must still be Morgen's: a bare `app.html` match is far too broad —
-  // 1Password's extension serves
-  // chrome-extension://<id>/app/app.html#/page/settings, which was being
-  // classified as the Morgen desktop app and, since Electron ranks first,
-  // picked ahead of the real web.morgen.so tab.
-  //
-  // Match on origin+path only. Scanning the whole URL lets a query or fragment
-  // decide identity — https://example.com/app.html?next=morgen, or the same
-  // 1Password page at #/morgen/settings, would both come back Electron.
-  return isMorgenAppHtml(url) ? "electron" : null;
-}
-
-/** Is this an app.html served BY Morgen — judged on origin+path, not query/fragment? */
-function isMorgenAppHtml(url: string): boolean {
-  let scope: string;
-  try {
-    const u = new URL(url);
-    if (!u.pathname.includes("app.html")) return false;
-    scope = `${u.protocol}//${u.host}${u.pathname}`;
-  } catch {
-    // Not URL-parseable: fall back to the part before any query/fragment.
-    scope = url.split(/[?#]/)[0] ?? "";
-    if (!scope.includes("app.html")) return false;
-  }
-  return /morgen/i.test(scope);
-}
-
-/**
- * Rank every viable Morgen target, best first: Electron before web (richer
- * credentials via the electronAPI bridge).
- *
- * Every one, not just the best: credentials here live in localStorage and
- * IndexedDB, so they must be read with Runtime.evaluate against a page target —
- * there is no browser-level equivalent as there is for cookies. A page routes
- * through its renderer, and a busy renderer never answers, so committing to a
- * single target means one wedged tab fails the whole refresh even when another
- * viable Morgen target is sitting right there. Measured in a sibling tool: 4 of
- * 8 live page targets were wedged at one point, and which ones drift over time.
- */
-export function rankTargets<T>(targets: T[]): Array<{ source: ConnectionSource; target: T }> {
-  const ranked: Array<{ source: ConnectionSource; target: T }> = [];
-  for (const source of ["electron", "chrome"] as const) {
-    for (const target of targets) {
-      if (classifyTarget(target) === source) ranked.push({ source, target });
-    }
-  }
-  return ranked;
-}
-
-/**
- * The single best Morgen target, or null.
+ * The single best target, or null.
  *
  * Prefer rankTargets when you can retry — this cannot survive a wedged tab.
  */
@@ -175,36 +64,24 @@ export function pickTarget<T>(targets: T[]): { source: ConnectionSource; target:
   return rankTargets(targets)[0] ?? null;
 }
 
-/** Platform-appropriate command for starting the Morgen desktop app with CDP. */
-function electronLaunchHint(port: number, platform: string = process.platform): string {
-  const bin =
-    platform === "darwin"
-      ? "/Applications/Morgen.app/Contents/MacOS/Morgen"
-      : platform === "win32"
-        ? "%LOCALAPPDATA%\\Programs\\Morgen\\Morgen.exe"
-        : "morgen"; // Linux: .deb/AppImage put `morgen` on PATH
-  return `${bin} --remote-debugging-port=${port}`;
-}
-
 /**
- * Error text for "no Morgen target". Names both routes — the desktop app
- * (Electron) and the web app in a browser — since either satisfies the CLI,
- * and only one of them exists on any given platform.
+ * How many targets the retry loop may spend its budget on.
+ *
+ * The budget must exceed a single call's timeout or the first wedged target
+ * consumes all of it and retry never happens — CDP_TIMEOUT_MS bounds one CALL,
+ * so the loop gets a multiple of it.
  */
-export function noTargetHint(port: number, platform: string = process.platform): string {
-  return (
-    `No Morgen target found on port ${port}.\n` +
-    "Start either route (quit the app first if already open, so the debug port takes effect):\n" +
-    `  Desktop app: ${electronLaunchHint(port, platform)}\n` +
-    `  Web app:     open https://web.morgen.so in a browser started with --remote-debugging-port=${port}`
-  );
-}
+const TARGET_BUDGET_MULTIPLIER = 3;
 
 /** Check if Morgen is reachable via CDP (Chrome with morgen.so tab or Electron app). */
-export async function isMorgenRunning(port = DEFAULT_PORT): Promise<ConnectionSource | false> {
+export async function isMorgenRunning(port?: number): Promise<ConnectionSource | false> {
   try {
-    const host = getCDPHost();
-    const targets = await CDP.List({ host, port });
+    if (port !== undefined) {
+      const targets = await CDP.List({ host: getCDPHost(), port });
+      return pickTarget(targets)?.source ?? false;
+    }
+    // No port named: probe the desktop app, then the browser.
+    const { targets } = await discoverEndpoint();
     return pickTarget(targets)?.source ?? false;
   } catch {
     return false;
@@ -275,8 +152,8 @@ function closeQuietly(client: CDP.Client): void {
 }
 
 /** Prefer a real diagnostic over a timeout when reporting why every target failed. */
-function bestError(errors: unknown[], port: number): Error {
-  if (errors.length === 0) return new Error(noTargetHint(port));
+function bestError(errors: unknown[], ports: number[]): Error {
+  if (errors.length === 0) return new Error(noTargetHint(ports));
   // A timeout says "a tab was busy"; anything else ("No morgen-refresh-token
   // found") tells the user what to actually do, so surface that instead of
   // whichever target happened to be tried last.
@@ -306,7 +183,7 @@ function bestError(errors: unknown[], port: number): Error {
  * minutes of silence before any error.
  */
 export async function withMorgenTarget<T>(
-  port: number,
+  port: number | undefined,
   fn: (client: CDP.Client, source: ConnectionSource) => Promise<T>
 ): Promise<T> {
   const host = getCDPHost();
@@ -317,14 +194,26 @@ export async function withMorgenTarget<T>(
   const end = Date.now() + perCallMs * TARGET_BUDGET_MULTIPLIER;
   const remaining = () => Math.max(0, end - Date.now());
 
-  const targets = await withTimeout(
-    CDP.List({ host, port }),
-    "listing CDP targets",
-    Math.min(remaining(), perCallMs)
-  );
+  // An explicit port is honoured as-is; otherwise probe the desktop app, then
+  // the browser. This is the whole point of cdp-endpoint: the two deployments
+  // are different ENDPOINTS, not different tabs on one endpoint.
+  let resolvedPort: number;
+  let targets: any[];
+  if (port !== undefined) {
+    resolvedPort = port;
+    targets = await withTimeout(
+      CDP.List({ host, port }) as Promise<any[]>,
+      "listing CDP targets",
+      Math.min(remaining(), perCallMs)
+    );
+  } else {
+    const endpoint = await discoverEndpoint();
+    resolvedPort = endpoint.port;
+    targets = endpoint.targets;
+  }
 
   const ranked = rankTargets(targets);
-  if (ranked.length === 0) throw new Error(noTargetHint(port));
+  if (ranked.length === 0) throw new Error(noTargetHint([resolvedPort]));
 
   const errors: unknown[] = [];
 
@@ -334,7 +223,7 @@ export async function withMorgenTarget<T>(
     try {
       client = await attachWithTimeout(
         host,
-        port,
+        resolvedPort,
         target,
         `connecting to the ${source} target`,
         Math.min(remaining(), perCallMs)
@@ -353,7 +242,7 @@ export async function withMorgenTarget<T>(
       if (client) closeQuietly(client);
     }
   }
-  throw bestError(errors, port);
+  throw bestError(errors, [resolvedPort]);
 }
 
 /** Extract refresh token and device ID from an existing CDP client. */
@@ -477,7 +366,7 @@ export async function refreshSession(): Promise<SessionInfo> {
  * Get a valid session token. Tries cached session first,
  * then extracts from running Morgen app or Chrome browser.
  */
-export async function getSessionToken(port = DEFAULT_PORT): Promise<string> {
+export async function getSessionToken(port?: number): Promise<string> {
   // Try cached session
   const cached = await loadSession();
   if (cached) return cached.token;
@@ -497,7 +386,7 @@ export async function getSessionToken(port = DEFAULT_PORT): Promise<string> {
  * Authenticate: extract credentials from running Morgen app or Chrome browser
  * and save session. Returns account info for display.
  */
-export async function authenticate(port = DEFAULT_PORT): Promise<{
+export async function authenticate(port?: number): Promise<{
   email: string;
   expiresAt: number;
   source: ConnectionSource;

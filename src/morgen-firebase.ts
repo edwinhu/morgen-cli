@@ -17,7 +17,6 @@ import { resolve } from "path";
 import { homedir } from "os";
 import { withMorgenTarget, withTimeout } from "./morgen-cdp";
 
-const DEFAULT_PORT = parseInt(process.env.CDP_PORT || "9253", 10);
 const SECURETOKEN_URL = "https://securetoken.googleapis.com/v1/token";
 
 /** Firebase project the Morgen app syncs against (from the app bundle). */
@@ -52,7 +51,7 @@ function getFirebaseFile(): string {
  * too — more so than localStorage — so this path is the likelier victim, not
  * the safer one.
  */
-async function extractFromApp(port: number): Promise<FirebaseCredentials> {
+async function extractFromApp(port?: number): Promise<FirebaseCredentials> {
   return withMorgenTarget(port, async (client) => {
     const { Runtime } = client;
     const result = await withTimeout(Runtime.evaluate({
@@ -158,7 +157,7 @@ async function loadFirebaseSession(): Promise<FirebaseSession | null> {
  * id token when the cached one is near expiry; only falls back to CDP extraction when there is
  * no cached credential at all.
  */
-export async function getFirebaseSession(port = DEFAULT_PORT): Promise<FirebaseSession> {
+export async function getFirebaseSession(port?: number): Promise<FirebaseSession> {
   const cached = await loadFirebaseSession();
   if (cached?.refreshToken) {
     // Reuse a still-valid id token (5-min buffer); otherwise refresh app-independently.
@@ -181,7 +180,7 @@ export async function getFirebaseSession(port = DEFAULT_PORT): Promise<FirebaseS
 }
 
 /** Force re-extraction of Firebase credentials from the running app (for `auth`). */
-export async function authenticateFirebase(port = DEFAULT_PORT): Promise<FirebaseSession> {
+export async function authenticateFirebase(port?: number): Promise<FirebaseSession> {
   const creds = await extractFromApp(port);
   const session = await exchangeIdToken(creds);
   await saveFirebaseSession(session);
