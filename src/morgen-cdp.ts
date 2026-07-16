@@ -18,6 +18,8 @@ import { homedir } from "os";
 
 const API_BASE = "https://api.morgen.so";
 const DEFAULT_PORT = parseInt(process.env.CDP_PORT || "9253", 10);
+/** Upper bound on any single CDP round-trip. Override with CDP_TIMEOUT_MS. */
+const CDP_TIMEOUT_MS = parseInt(process.env.CDP_TIMEOUT_MS || "10000", 10);
 
 /**
  * Resolve session file path at call time so tests can redirect via
@@ -44,6 +46,27 @@ export interface SessionInfo {
   deviceId: string;
   expiresAt: number; // Unix timestamp ms
   source?: ConnectionSource; // "electron" or "chrome"
+}
+
+/**
+ * Bound a CDP call. Credentials here live in localStorage/IndexedDB, so they
+ * must be read with Runtime.evaluate against a page target — there is no
+ * browser-level equivalent as there is for cookies. That means a wedged
+ * renderer can swallow the call: observed live in a sibling tool, where a
+ * playing YouTube tab never answered a CDP command while four other tabs
+ * answered instantly. Without a bound, that is an indefinite hang and no error.
+ */
+export function withTimeout<T>(p: Promise<T>, what: string, ms = CDP_TIMEOUT_MS): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${what} timed out after ${ms}ms — is the Morgen tab responsive?`)),
+      ms
+    );
+    p.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); }
+    );
+  });
 }
 
 /** Classify a CDP target as Morgen Electron, Chrome web app, or neither. */
@@ -131,7 +154,7 @@ async function extractCredentialsFromClient(client: CDP.Client): Promise<{
   // Electron. morgen-device-id is in standard localStorage on the web app, but
   // the Electron desktop app stores it in window.electronAPI.localStorage
   // (a custom IPC bridge), accessed via .get(key) — not getItem.
-  const result = await Runtime.evaluate({
+  const result = await withTimeout(Runtime.evaluate({
     expression: `
       (async () => {
         const refreshToken = localStorage.getItem("morgen-refresh-token");
@@ -145,7 +168,7 @@ async function extractCredentialsFromClient(client: CDP.Client): Promise<{
     `,
     awaitPromise: true,
     returnByValue: true,
-  });
+  }), "reading Morgen credentials from localStorage");
 
   const creds = JSON.parse(result.result.value);
   if (!creds.refreshToken) throw new Error("No morgen-refresh-token found in Morgen app");
@@ -277,10 +300,10 @@ export async function authenticate(port = DEFAULT_PORT): Promise<{
 
     // Get email from the same connection
     const { Runtime } = conn.client;
-    const result = await Runtime.evaluate({
+    const result = await withTimeout(Runtime.evaluate({
       expression: `localStorage.getItem("morgen-email") || "unknown"`,
       returnByValue: true,
-    });
+    }), "reading Morgen account email");
     const email = result.result.value;
 
     return { email, expiresAt: session.expiresAt, source: conn.source };

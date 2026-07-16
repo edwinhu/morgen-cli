@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { classifyTarget, pickTarget, noTargetHint } from "../morgen-cdp";
+import { classifyTarget, pickTarget, noTargetHint, withTimeout } from "../morgen-cdp";
 
 const page = (url: string) => ({ type: "page", url });
 
@@ -62,6 +62,30 @@ describe("pickTarget", () => {
   test("returns null when nothing matches", () => {
     expect(pickTarget([page("https://example.com")])).toBeNull();
     expect(pickTarget([])).toBeNull();
+  });
+});
+
+describe("withTimeout", () => {
+  test("passes through a value that resolves in time", async () => {
+    expect(await withTimeout(Promise.resolve("ok"), "thing", 1000)).toBe("ok");
+  });
+
+  test("propagates the original rejection, not a timeout", async () => {
+    const boom = Promise.reject(new Error("boom"));
+    await expect(withTimeout(boom, "thing", 1000)).rejects.toThrow("boom");
+  });
+
+  test("rejects when the call never settles — the wedged-renderer case", async () => {
+    // A wedged page target never answers; without a bound this hangs forever.
+    const never = new Promise<never>(() => {});
+    await expect(withTimeout(never, "Runtime.evaluate", 20)).rejects.toThrow(/timed out after 20ms/);
+  });
+
+  test("names the operation so the error says what stalled", async () => {
+    const never = new Promise<never>(() => {});
+    await expect(withTimeout(never, "reading credentials", 20)).rejects.toThrow(
+      /reading credentials/
+    );
   });
 });
 

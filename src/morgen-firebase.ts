@@ -16,7 +16,7 @@
 import CDP from "chrome-remote-interface";
 import { resolve } from "path";
 import { homedir } from "os";
-import { pickTarget, noTargetHint } from "./morgen-cdp";
+import { pickTarget, noTargetHint, withTimeout } from "./morgen-cdp";
 
 const DEFAULT_PORT = parseInt(process.env.CDP_PORT || "9253", 10);
 const SECURETOKEN_URL = "https://securetoken.googleapis.com/v1/token";
@@ -60,7 +60,7 @@ async function extractFromApp(port: number): Promise<FirebaseCredentials> {
   const client = await CDP({ host, port, target: picked.target });
   try {
     const { Runtime } = client;
-    const result = await Runtime.evaluate({
+    const result = await withTimeout(Runtime.evaluate({
       // firebase:authUser:<apiKey>:[DEFAULT] holds {uid, stsTokenManager:{refreshToken}, apiKey}
       expression: `
         (async () => {
@@ -95,7 +95,7 @@ async function extractFromApp(port: number): Promise<FirebaseCredentials> {
       `,
       awaitPromise: true,
       returnByValue: true,
-    });
+    }), "reading Firebase auth state from IndexedDB");
 
     const creds = JSON.parse(result.result.value as string);
     if (creds.error) {
