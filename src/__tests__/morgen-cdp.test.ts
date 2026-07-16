@@ -235,7 +235,7 @@ describe("target resilience", () => {
       new Response(JSON.stringify({ token: "api-tok", aiToken: "ai-tok", expiresIn: 3600 }), {
         status: 200,
         headers: { "content-type": "application/json" },
-      })) as typeof fetch;
+      })) as unknown as typeof fetch;
 
     const res = await authenticate(9999);
     expect(res.email).toBe("user@example.com");

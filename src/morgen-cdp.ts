@@ -19,6 +19,18 @@ import { homedir } from "os";
 const API_BASE = "https://api.morgen.so";
 const DEFAULT_PORT = parseInt(process.env.CDP_PORT || "9253", 10);
 const DEFAULT_CDP_TIMEOUT_MS = 10_000;
+/**
+ * How many targets the retry loop may spend its budget on.
+ *
+ * The budget must exceed a single call's timeout or the first wedged target
+ * consumes all of it and retry never happens — CDP_TIMEOUT_MS bounds one CALL,
+ * so the loop gets a multiple of it. Realistically there are one or two Morgen
+ * targets (rankTargets only returns Morgen ones, never every open tab), so this
+ * bounds the pathological case without starving the normal one.
+ */
+const TARGET_BUDGET_MULTIPLIER = 3;
+/** setTimeout's 32-bit ceiling; beyond this it silently clamps to 1ms. */
+const MAX_CDP_TIMEOUT_MS = 2_147_483_647;
 
 /**
  * Upper bound on any single CDP round-trip. Override with CDP_TIMEOUT_MS.
@@ -34,7 +46,11 @@ function cdpTimeoutMs(): number {
   const raw = process.env.CDP_TIMEOUT_MS;
   if (!raw) return DEFAULT_CDP_TIMEOUT_MS;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return DEFAULT_CDP_TIMEOUT_MS;
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_CDP_TIMEOUT_MS;
+  // setTimeout clamps anything past the 32-bit ceiling to 1ms, which would fire
+  // instantly and report "timed out after 2147483648ms" — the exact failure the
+  // validation exists to prevent.
+  if (n > MAX_CDP_TIMEOUT_MS) return DEFAULT_CDP_TIMEOUT_MS;
   return n;
 }
 
@@ -95,6 +111,11 @@ export function classifyTarget(t: any): ConnectionSource | null {
   // The desktop app loads morgen://./app.html.
   if (url.startsWith("morgen://")) return "electron";
 
+  // The web app is checked before the app.html fallback: web.morgen.so/app.html
+  // is a web tab, not the desktop app, and misreading it would mislabel the
+  // source in `morgen auth` output and in session.json.
+  if (url.includes("morgen.so")) return "chrome";
+
   // Some builds surface a bare app.html path instead of the morgen:// scheme.
   // It must still be Morgen's: a bare `app.html` match is far too broad —
   // 1Password's extension serves
@@ -104,7 +125,6 @@ export function classifyTarget(t: any): ConnectionSource | null {
   // 1Password's localStorage then failed the whole refresh.
   if (url.includes("app.html") && /morgen/i.test(url)) return "electron";
 
-  if (url.includes("morgen.so")) return "chrome";
   return null;
 }
 
@@ -191,7 +211,72 @@ export async function isMorgenRunning(port = DEFAULT_PORT): Promise<ConnectionSo
  * served. withTimeout bounds each attempt, so a wedge costs a timeout, not the
  * refresh.
  */
-async function withMorgenTarget<T>(
+/**
+ * Bound an attach whose client must be closed if it lands after the timeout.
+ *
+ * withTimeout only stops waiting — it cannot abort the connect. A slow-attaching
+ * renderer that completes after we gave up would otherwise orphan a live CDP
+ * websocket, and an open handle keeps the CLI's loop from draining: the command
+ * prints success and then hangs.
+ */
+async function attachWithTimeout(
+  host: string,
+  port: number,
+  target: any,
+  what: string,
+  ms: number
+): Promise<CDP.Client> {
+  const attach = CDP({ host, port, target }) as Promise<CDP.Client>;
+  const bounded = withTimeout(attach, what, ms);
+  bounded.catch(() => {
+    attach.then(
+      (client) => {
+        try {
+          void client.close();
+        } catch {
+          // ignore
+        }
+      },
+      () => {
+        // already rejected; nothing to close
+      }
+    );
+  });
+  return bounded;
+}
+
+/** Prefer a real diagnostic over a timeout when reporting why every target failed. */
+function bestError(errors: unknown[], port: number): Error {
+  if (errors.length === 0) return new Error(noTargetHint(port));
+  // A timeout says "a tab was busy"; anything else ("No morgen-refresh-token
+  // found") tells the user what to actually do, so surface that instead of
+  // whichever target happened to be tried last.
+  const substantive = errors.find(
+    (e) => e instanceof Error && !/timed out after/.test(e.message)
+  );
+  return (substantive ?? errors[errors.length - 1]) as Error;
+}
+
+/**
+ * Run `fn` against the best Morgen target that actually answers.
+ *
+ * Tries each viable target in rank order (Electron, then web), moving on when
+ * one fails or wedges, and always closing the client. Only the CDP work belongs
+ * in `fn` — keep network calls outside, so a backend failure is not retried
+ * against every tab.
+ *
+ * Retrying matters because these credentials can only be read with
+ * Runtime.evaluate against a page target (localStorage/IndexedDB have no
+ * browser-level CDP equivalent, unlike cookies). A page routes through its
+ * renderer and a busy renderer never answers, so committing to one target lets
+ * a single wedged tab fail a refresh that another open Morgen target could have
+ * served.
+ *
+ * One wall-clock budget covers the whole loop. Without it, each target could
+ * burn several timeouts (connect + one per evaluate) and N targets would take
+ * minutes of silence before any error.
+ */
+export async function withMorgenTarget<T>(
   port: number,
   fn: (client: CDP.Client, source: ConnectionSource) => Promise<T>
 ): Promise<T> {
@@ -201,17 +286,25 @@ async function withMorgenTarget<T>(
   const ranked = rankTargets(targets);
   if (ranked.length === 0) throw new Error(noTargetHint(port));
 
-  let lastError: unknown;
+  const perCallMs = cdpTimeoutMs();
+  const end = Date.now() + perCallMs * TARGET_BUDGET_MULTIPLIER;
+  const remaining = () => Math.max(0, end - Date.now());
+  const errors: unknown[] = [];
+
   for (const { source, target } of ranked) {
+    if (remaining() === 0) break;
     let client: CDP.Client | null = null;
     try {
-      client = await withTimeout(
-        CDP({ host, port, target }),
-        `connecting to the ${source} target`
+      client = await attachWithTimeout(
+        host,
+        port,
+        target,
+        `connecting to the ${source} target`,
+        Math.min(remaining(), perCallMs)
       );
       return await fn(client, source);
     } catch (err) {
-      lastError = err;
+      errors.push(err);
     } finally {
       if (client) {
         try {
@@ -222,7 +315,7 @@ async function withMorgenTarget<T>(
       }
     }
   }
-  throw lastError ?? new Error(noTargetHint(port));
+  throw bestError(errors, port);
 }
 
 /** Extract refresh token and device ID from an existing CDP client. */
