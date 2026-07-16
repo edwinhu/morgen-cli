@@ -13,10 +13,9 @@
  * See docs/investigations/2026-06-10_open-invites.md for the full reverse-engineering.
  */
 
-import CDP from "chrome-remote-interface";
 import { resolve } from "path";
 import { homedir } from "os";
-import { pickTarget, noTargetHint, withTimeout } from "./morgen-cdp";
+import { withMorgenTarget, withTimeout } from "./morgen-cdp";
 
 const DEFAULT_PORT = parseInt(process.env.CDP_PORT || "9253", 10);
 const SECURETOKEN_URL = "https://securetoken.googleapis.com/v1/token";
@@ -35,10 +34,6 @@ export interface FirebaseSession extends FirebaseCredentials {
   expiresAt: number; // Unix ms
 }
 
-function getCDPHost(): string {
-  return process.env.CDP_HOST || process.env.HOST_IP || "localhost";
-}
-
 /** Resolve the Firebase credential cache path at call time (tests redirect via env). */
 function getFirebaseFile(): string {
   return (
@@ -47,18 +42,18 @@ function getFirebaseFile(): string {
   );
 }
 
-/** Find the Morgen Electron/Chrome target and read Firebase auth state from IndexedDB. */
+/**
+ * Find the Morgen Electron/Chrome target and read Firebase auth state from IndexedDB.
+ *
+ * Goes through morgen-cdp's withMorgenTarget so this path gets the same
+ * Electron-then-web preference AND the same retry: it previously committed to a
+ * single target with an unbounded connect, so a wedged tab failed open-invite
+ * even with a healthy Morgen tab open. IndexedDB is read through the renderer
+ * too — more so than localStorage — so this path is the likelier victim, not
+ * the safer one.
+ */
 async function extractFromApp(port: number): Promise<FirebaseCredentials> {
-  const host = getCDPHost();
-  const targets = await CDP.List({ host, port });
-  // Share morgen-cdp's picker so the Firebase path honours the same
-  // Electron-then-web preference; it previously took whichever target matched
-  // first, which could land on the web app while the desktop app was running.
-  const picked = pickTarget(targets);
-  if (!picked) throw new Error(noTargetHint(port));
-
-  const client = await CDP({ host, port, target: picked.target });
-  try {
+  return withMorgenTarget(port, async (client) => {
     const { Runtime } = client;
     const result = await withTimeout(Runtime.evaluate({
       // firebase:authUser:<apiKey>:[DEFAULT] holds {uid, stsTokenManager:{refreshToken}, apiKey}
@@ -108,9 +103,7 @@ async function extractFromApp(port: number): Promise<FirebaseCredentials> {
       throw new Error("Incomplete Firebase credentials in Morgen app.");
     }
     return creds as FirebaseCredentials;
-  } finally {
-    await client.close();
-  }
+  });
 }
 
 /** Exchange a Firebase refresh token for a fresh ID token (no app/CDP required). */
