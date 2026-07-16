@@ -6,8 +6,9 @@
  * full integration task CRUD through the Morgen API.
  *
  * Flow:
- *   1. Connect via CDP to Chrome (port 9253 by default)
- *   2. Find the morgen.so tab
+ *   1. Discover the CDP endpoint: the desktop app first, then Chrome
+ *      (see cdp-endpoint.ts)
+ *   2. Find the Morgen target there
  *   3. Read morgen-refresh-token and morgen-device-id from localStorage
  *   4. Exchange via POST /identity/refresh → session token (1h TTL)
  */
