@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { mockMorgenCdp } from "./helpers/mock-morgen-cdp";
 import type {
   ChatMessage,
   ChatMessageToolCall,
@@ -11,14 +12,16 @@ import type {
 // Mock morgen-cdp BEFORE importing chat module
 let mockLoadSessionResult: { token: string; apiToken: string; refreshToken: string; deviceId: string; expiresAt: number } | null = null;
 
-mock.module("../morgen-cdp", () => ({
+// Stubs the auth surface only; every other morgen-cdp export stays real, so this
+// registration cannot break other test files' static imports. See the helper.
+await mockMorgenCdp({
   loadSession: () => Promise.resolve(mockLoadSessionResult),
   saveSession: async () => {},
   isMorgenRunning: async () => false,
   authenticate: async () => ({ email: "", expiresAt: 0, source: "electron" }),
   refreshSession: async () => { throw new Error("no stored session"); },
   getSessionToken: async () => "",
-}));
+});
 
 // Import chat functions after mock is set up
 const { parseSSEStream, sendChat } = await import("../chat");

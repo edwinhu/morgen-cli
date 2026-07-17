@@ -1,18 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { resolve } from "path";
 import { hostMatches } from "../cdp-endpoint";
-
-// Import the REAL morgen-cdp module via absolute path with cache-busting query
-// to avoid getting the stub mock set by other test files (chat.test.ts,
-// morgen-api.test.ts), which call mock.module("../morgen-cdp", ...) globally.
-// Same pattern as morgen-cdp.test.ts; see comment there for rationale.
-const cdpModulePath = resolve(import.meta.dir, "../morgen-cdp.ts");
-const mod = await import(cdpModulePath + "?test-target");
-const classifyTarget = mod.classifyTarget as typeof import("../morgen-cdp").classifyTarget;
-const pickTarget = mod.pickTarget as typeof import("../morgen-cdp").pickTarget;
-const rankTargets = mod.rankTargets as typeof import("../morgen-cdp").rankTargets;
-const noTargetHint = mod.noTargetHint as typeof import("../morgen-cdp").noTargetHint;
-const withTimeout = mod.withTimeout as typeof import("../morgen-cdp").withTimeout;
+import { classifyTarget, pickTarget, rankTargets, noTargetHint, withTimeout } from "../morgen-cdp";
 
 describe("rankTargets", () => {
   const page = (url: string) => ({ type: "page", url });
