@@ -236,13 +236,15 @@ export async function withMorgenTarget<T>(
         `connecting to the ${source} target`,
         Math.min(remaining(), perCallMs)
       );
-      // Bound fn too. Its own calls are bounded individually, but several of
-      // them (connect + creds + email) could otherwise outlast the budget the
-      // loop only re-checks BETWEEN targets.
+      // Give fn a PER-TARGET slice, not the whole remaining budget. fn's own
+      // calls are each bounded, but a multi-call callback (authenticate reads
+      // credentials AND the email) could chain several and consume everything —
+      // so the first wedged target starved every later one, defeating the retry
+      // this loop exists for. Reserving a slice keeps fallbacks reachable.
       return await withTimeout(
         fn(client, source),
         `reading from the ${source} target`,
-        remaining()
+        Math.min(remaining(), perCallMs)
       );
     } catch (err) {
       errors.push(err);
