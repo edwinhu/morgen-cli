@@ -80,11 +80,27 @@ describe("classifyTarget", () => {
     expect(classifyTarget(page("https://example.com/app.html"))).toBeNull();
   });
 
-  test("morgen.so is the web app, on any subdomain", () => {
+  test("morgen.so is the web app, on the app hosts", () => {
     // web.morgen.so is what the app actually serves today; app.morgen.so is the
-    // older host. The matcher keys on the bare domain, so both must classify.
+    // older host. Both must classify.
     expect(classifyTarget(page("https://web.morgen.so/"))).toBe("chrome");
     expect(classifyTarget(page("https://app.morgen.so/calendar"))).toBe("chrome");
+  });
+
+  test("REGRESSION: non-app morgen.so subdomains are NOT the web app", () => {
+    // isWebTarget matched the bare apex domain, so ANY subdomain of morgen.so —
+    // including real, public, logged-out pages a user routinely has open —
+    // classified as "chrome". isMorgenRunning then reported Morgen "running" off
+    // a blog tab, and withMorgenTarget attached and ran localStorage-reading JS
+    // in it. book.morgen.so (public booking links, see
+    // docs/investigations/2026-06-10_open-invites.md) and api.morgen.so (the
+    // REST API host, src/morgen-api.ts) are real, confirmed subdomains that are
+    // NOT the logged-in app UI.
+    expect(classifyTarget(page("https://book.morgen.so/abc123"))).not.toBe("chrome");
+    expect(classifyTarget(page("https://api.morgen.so/"))).not.toBe("chrome");
+    expect(classifyTarget(page("https://accounts.morgen.so/login"))).not.toBe("chrome");
+    expect(classifyTarget(page("https://morgen.so/blog/some-post"))).not.toBe("chrome");
+    expect(classifyTarget(page("https://morgen.so/"))).not.toBe("chrome");
   });
 
   test("non-page targets are never classified", () => {

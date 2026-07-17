@@ -64,9 +64,26 @@ function isElectronTarget(url: string): boolean {
   return false;
 }
 
+/**
+ * The app's own hosts — where the logged-in web UI is actually served.
+ *
+ * NOT the bare apex (`morgen.so`): that domain also serves real, public,
+ * logged-out pages a user routinely has open — `book.morgen.so` (booking
+ * links, see docs/investigations/2026-06-10_open-invites.md), `api.morgen.so`
+ * (the REST API, src/morgen-api.ts), `platform.morgen.so`, `ai.cf.morgen.so`,
+ * `docs.morgen.so`, and the marketing site at `morgen.so` itself. A false
+ * positive here beats or masks the real tab in rankTargets and gets
+ * credential-reading JavaScript run in the impostor's origin.
+ *
+ * web.morgen.so is what the app serves today (confirmed live: a logged-in tab
+ * on CDP port 9222). app.morgen.so is the older host, still documented and
+ * exercised by morgen-target.test.ts — some installs may still point at it.
+ */
+const WEB_APP_HOSTS = ["web.morgen.so", "app.morgen.so"];
+
 /** Is this target the product's web app in a browser? */
 function isWebTarget(url: string): boolean {
-  return hostMatches(url, "morgen.so");
+  return WEB_APP_HOSTS.some((host) => hostMatches(url, host));
 }
 
 /** Command that starts the desktop app with CDP, per platform. */
