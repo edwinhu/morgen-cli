@@ -1,14 +1,17 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { mockMorgenCdp } from "./helpers/mock-morgen-cdp";
 
-// Mock loadSession to return null so we can test API-key-only auth paths
-mock.module("../morgen-cdp", () => ({
+// Mock loadSession to return null so we can test API-key-only auth paths.
+// Stubs the auth surface only; every other morgen-cdp export stays real, so this
+// registration cannot break other test files' static imports. See the helper.
+await mockMorgenCdp({
   loadSession: async () => null,
   saveSession: async () => {},
   isMorgenRunning: async () => false,
   authenticate: async () => ({ email: "", expiresAt: 0, source: "electron" }),
   refreshSession: async () => { throw new Error("no stored session"); },
   getSessionToken: async () => "",
-}));
+});
 
 describe("morgenFetch", () => {
   const originalEnv = process.env.MORGEN_API_KEY;

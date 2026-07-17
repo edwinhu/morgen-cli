@@ -1,0 +1,5 @@
+[test]
+# Runs before any test file is evaluated. Isolates the suite from the developer's
+# real machine state (logged-in morgen session, MORGEN_API_KEY in the shell).
+# See src/__tests__/helpers/preload.ts for the full rationale.
+preload = ["./src/__tests__/helpers/preload.ts"]

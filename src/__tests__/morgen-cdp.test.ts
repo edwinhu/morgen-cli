@@ -27,8 +27,15 @@ mock.module("chrome-remote-interface", () => {
   return { default: cdpFn };
 });
 
-// Import the REAL morgen-cdp module via absolute path with cache-busting query
-// to avoid getting the stub mock set by other test files (chat.test.ts, morgen-api.test.ts).
+// Import morgen-cdp dynamically, AFTER the chrome-remote-interface mock above is
+// registered, so the module binds the mocked CDP client rather than the real one.
+// A static import would hoist above that mock.module call and bind the real CDP.
+// The cache-busting query forces a fresh evaluation even if another test file
+// already loaded morgen-cdp against the real chrome-remote-interface.
+//
+// NOTE: this is NOT about the old chat.test.ts / morgen-api.test.ts stub leak —
+// those now register complete mocks via helpers/mock-morgen-cdp.ts, so a plain
+// static import of morgen-cdp is safe elsewhere (see morgen-target.test.ts).
 const cdpModulePath = resolve(import.meta.dir, "../morgen-cdp.ts");
 const mod = await import(cdpModulePath + "?test-cdp");
 const isMorgenRunning = mod.isMorgenRunning as typeof import("../morgen-cdp").isMorgenRunning;
