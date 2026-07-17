@@ -215,7 +215,7 @@ export async function withMorgenTarget<T>(
       Math.min(remaining(), perCallMs)
     );
   } else {
-    const endpoint = await discoverEndpoint();
+    const endpoint = await discoverEndpoint(remaining);
     resolvedPort = endpoint.port;
     targets = endpoint.targets;
   }
