@@ -236,15 +236,23 @@ export async function withMorgenTarget<T>(
         `connecting to the ${source} target`,
         Math.min(remaining(), perCallMs)
       );
-      // Give fn a PER-TARGET slice, not the whole remaining budget. fn's own
-      // calls are each bounded, but a multi-call callback (authenticate reads
-      // credentials AND the email) could chain several and consume everything —
-      // so the first wedged target starved every later one, defeating the retry
-      // this loop exists for. Reserving a slice keeps fallbacks reachable.
+      // fn gets the remaining budget, NOT a single per-call slice.
+      //
+      // A slice of perCallMs looks like the fix for "one wedged target starves
+      // the rest", and breaks authenticate() outright: its callback chains TWO
+      // bounded reads (credentials, then the email), each entitled to perCallMs,
+      // so a healthy pair legitimately needs 2x. Capping fn at 1x made a
+      // healthy-but-slow tab fail — proven: two 200ms reads under a 300ms cap
+      // time out, where the 900ms budget succeeds. The cure broke the path.
+      //
+      // Starvation is real but strictly less bad than breaking the happy path.
+      // A correct slice must be >= the max number of bounded calls any caller
+      // chains, which means fn's contract has to state that number — not a
+      // number guessed here.
       return await withTimeout(
         fn(client, source),
         `reading from the ${source} target`,
-        Math.min(remaining(), perCallMs)
+        remaining()
       );
     } catch (err) {
       errors.push(err);
