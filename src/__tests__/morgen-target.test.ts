@@ -1,11 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import {
-  classifyTarget,
-  pickTarget,
-  rankTargets,
-  noTargetHint,
-  withTimeout,
-} from "../morgen-cdp";
+import { resolve } from "path";
+import { hostMatches } from "../cdp-endpoint";
+
+// Import the REAL morgen-cdp module via absolute path with cache-busting query
+// to avoid getting the stub mock set by other test files (chat.test.ts,
+// morgen-api.test.ts), which call mock.module("../morgen-cdp", ...) globally.
+// Same pattern as morgen-cdp.test.ts; see comment there for rationale.
+const cdpModulePath = resolve(import.meta.dir, "../morgen-cdp.ts");
+const mod = await import(cdpModulePath + "?test-target");
+const classifyTarget = mod.classifyTarget as typeof import("../morgen-cdp").classifyTarget;
+const pickTarget = mod.pickTarget as typeof import("../morgen-cdp").pickTarget;
+const rankTargets = mod.rankTargets as typeof import("../morgen-cdp").rankTargets;
+const noTargetHint = mod.noTargetHint as typeof import("../morgen-cdp").noTargetHint;
+const withTimeout = mod.withTimeout as typeof import("../morgen-cdp").withTimeout;
 
 describe("rankTargets", () => {
   const page = (url: string) => ({ type: "page", url });
@@ -79,11 +86,27 @@ describe("classifyTarget", () => {
     expect(classifyTarget(page("https://example.com/app.html"))).toBeNull();
   });
 
-  test("morgen.so is the web app, on any subdomain", () => {
+  test("morgen.so is the web app, on the app hosts", () => {
     // web.morgen.so is what the app actually serves today; app.morgen.so is the
-    // older host. The matcher keys on the bare domain, so both must classify.
+    // older host. Both must classify.
     expect(classifyTarget(page("https://web.morgen.so/"))).toBe("chrome");
     expect(classifyTarget(page("https://app.morgen.so/calendar"))).toBe("chrome");
+  });
+
+  test("REGRESSION: non-app morgen.so subdomains are NOT the web app", () => {
+    // isWebTarget matched the bare apex domain, so ANY subdomain of morgen.so —
+    // including real, public, logged-out pages a user routinely has open —
+    // classified as "chrome". isMorgenRunning then reported Morgen "running" off
+    // a blog tab, and withMorgenTarget attached and ran localStorage-reading JS
+    // in it. book.morgen.so (public booking links, see
+    // docs/investigations/2026-06-10_open-invites.md) and api.morgen.so (the
+    // REST API host, src/morgen-api.ts) are real, confirmed subdomains that are
+    // NOT the logged-in app UI.
+    expect(classifyTarget(page("https://book.morgen.so/abc123"))).not.toBe("chrome");
+    expect(classifyTarget(page("https://api.morgen.so/"))).not.toBe("chrome");
+    expect(classifyTarget(page("https://accounts.morgen.so/login"))).not.toBe("chrome");
+    expect(classifyTarget(page("https://morgen.so/blog/some-post"))).not.toBe("chrome");
+    expect(classifyTarget(page("https://morgen.so/"))).not.toBe("chrome");
   });
 
   test("non-page targets are never classified", () => {
@@ -159,7 +182,7 @@ describe("withTimeout", () => {
 describe("noTargetHint", () => {
   test("names both routes on every platform", () => {
     for (const platform of ["darwin", "linux", "win32"]) {
-      const hint = noTargetHint(9253, platform);
+      const hint = noTargetHint([9253, 9222], platform);
       expect(hint).toContain("Desktop app:");
       expect(hint).toContain("Web app:");
       expect(hint).toContain("9253");
@@ -167,18 +190,78 @@ describe("noTargetHint", () => {
   });
 
   test("linux does not suggest a macOS app bundle", () => {
-    const hint = noTargetHint(9253, "linux");
+    const hint = noTargetHint([9253, 9222], "linux");
     expect(hint).not.toContain("/Applications/");
     expect(hint).toContain("morgen --remote-debugging-port=9253");
   });
 
   test("darwin suggests the app bundle", () => {
-    expect(noTargetHint(9253, "darwin")).toContain(
+    expect(noTargetHint([9253, 9222], "darwin")).toContain(
       "/Applications/Morgen.app/Contents/MacOS/Morgen"
     );
   });
 
   test("win32 suggests the exe", () => {
-    expect(noTargetHint(9253, "win32")).toContain("Morgen.exe");
+    expect(noTargetHint([9253, 9222], "win32")).toContain("Morgen.exe");
+  });
+});
+
+describe("hostMatches — endpoint identity must not be forgeable", () => {
+  test("accepts the domain and its subdomains", () => {
+    expect(hostMatches("https://morgen.so/", "morgen.so")).toBe(true);
+    expect(hostMatches("https://web.morgen.so/calendar", "morgen.so")).toBe(true);
+  });
+
+  test("rejects suffix-confusion hosts", () => {
+    // The bug this guards: includes("morgen.so") matched all of these, and the
+    // winning target gets credential-reading JS executed in it.
+    expect(hostMatches("https://morgen.so.evil.example/", "morgen.so")).toBe(false);
+    expect(hostMatches("https://notmorgen.so/", "morgen.so")).toBe(false);
+  });
+
+  test("rejects query/fragment mentions", () => {
+    expect(hostMatches("https://evil.example/?next=morgen.so", "morgen.so")).toBe(false);
+    expect(hostMatches("https://evil.example/#morgen.so", "morgen.so")).toBe(false);
+  });
+
+  test("rejects non-http(s) schemes and unparseable input", () => {
+    expect(hostMatches("file:///morgen.so/app.html", "morgen.so")).toBe(false);
+    expect(hostMatches("not a url", "morgen.so")).toBe(false);
+  });
+
+  test("an http(s) page can never be the Electron desktop app", () => {
+    // Electron ranks FIRST, so a false positive here beats the genuine tab and
+    // gets credential-reading JS run in the impostor. An earlier cut matched
+    // /morgen/i across origin+path and accepted every one of these.
+    for (const url of [
+      "https://evil.example/morgen/app.html",
+      "https://morgen.so.evil.example/app.html",
+      "https://cdn.example/assets/morgen/app.html",
+      "http://localhost:8080/morgen/app.html",
+      "chrome-extension://abc/app/app.html",
+    ]) {
+      expect(classifyTarget({ type: "page", url })).toBeNull();
+    }
+  });
+
+  test("the real desktop app still classifies — a false negative breaks auth", () => {
+    expect(classifyTarget({ type: "page", url: "morgen://./app.html" })).toBe("electron");
+    expect(
+      classifyTarget({ type: "page", url: "file:///opt/Morgen/resources/app.html" })
+    ).toBe("electron");
+  });
+
+  test("an impostor never outranks the real tab", () => {
+    const ranked = rankTargets([
+      { type: "page", url: "https://evil.example/morgen/app.html" },
+      { type: "page", url: "https://web.morgen.so/" },
+    ]);
+    expect(ranked[0]?.source).toBe("chrome");
+    expect((ranked[0]?.target as any).url).toBe("https://web.morgen.so/");
+  });
+
+  test("classifyTarget inherits the hardening", () => {
+    expect(classifyTarget({ type: "page", url: "https://morgen.so.evil.example/" })).toBeNull();
+    expect(classifyTarget({ type: "page", url: "https://web.morgen.so/" })).toBe("chrome");
   });
 });

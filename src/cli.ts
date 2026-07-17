@@ -346,7 +346,9 @@ ${colors.bold}OPTIONS${colors.reset}
   --calendars <names> Filter: only include these calendars (partial name match)
   --exclude-calendars <names> Filter: exclude these calendars (partial name match)
   --only-primary      Filter: only primary calendar (for chat)
-  --port <number>     CDP port (default: from CDP_PORT env or 9253)
+  --port <number>     CDP port. Default: probe the Morgen desktop app
+                      (ELECTRON_CDP_PORT, 9253) then Chrome/Chromium
+                      (CHROME_CDP_PORT, 9222). CDP_PORT pins one port.
   --json              Output as JSON array
   --ndjson            Output as newline-delimited JSON (one object per line); for
                       tasks --all, streams results per account as they arrive
@@ -355,10 +357,11 @@ ${colors.bold}OPTIONS${colors.reset}
   --version           Show version
 
 ${colors.bold}AUTH${colors.reset}
-  Connects to Chrome via CDP (port 9253 by default) and finds the Morgen tab
-  (web.morgen.so) to extract auth tokens.
+  Discovers the CDP endpoint — the Morgen desktop app first, then
+  Chrome/Chromium — and reads auth tokens from the Morgen target there.
 
-  Use --port to specify the CDP port (default: 9253 or CDP_PORT env).
+  Use --port to pin a CDP port. Otherwise: ELECTRON_CDP_PORT (9253) then
+  CHROME_CDP_PORT (9222); CDP_PORT pins one port and skips probing.
   Session tokens are cached in ~/.config/morgen-cli/session.json.
   Alternatively, set MORGEN_API_KEY for basic read + Morgen-native CRUD.
 
