@@ -27,6 +27,13 @@ import {
   participantsFromCsv,
   buildLocations,
   buildAlerts,
+  buildRecurrenceRules,
+  buildRecurrenceOverrides,
+  applyExclusions,
+  parseSeriesMode,
+  describeRecurrence,
+  type ExclusionOutcome,
+  type SeriesUpdateMode,
 } from "./calendars";
 import { sendChat } from "./chat";
 import {
@@ -109,6 +116,14 @@ interface CliOptions {
   alert?: string;
   allDay?: boolean;
   minMinutes?: number;
+  // Recurrence options
+  rrule?: string;
+  repeat?: string;
+  interval?: string;
+  until?: string;
+  count?: string;
+  except?: string;
+  series?: string;
   // Calendar filtering (applies to calendar events/free/list and chat)
   calendars?: string[];
   excludeCalendars?: string[];
@@ -126,26 +141,32 @@ interface CliOptions {
 // ---------------------------------------------------------------------------
 // Arg parser -- custom, zero-dependency
 // ---------------------------------------------------------------------------
-function parseArgs(args: string[]): CliOptions {
-  const opts: CliOptions = {
+function emptyOptions(): CliOptions {
+  return {
     command: "",
     restArgs: [],
     json: false,
     help: false,
     version: false,
   };
+}
+
+function parseArgs(args: string[]): CliOptions {
+  const opts: CliOptions = emptyOptions();
 
   const positionals: string[] = [];
+  const unknownFlags: string[] = [];
   let i = 0;
 
   while (i < args.length) {
     const arg = args[i];
+    if (arg === undefined) break;
 
     if (arg.startsWith("--") && arg.includes("=")) {
       const eqIdx = arg.indexOf("=");
       const key = arg.slice(2, eqIdx);
       const value = arg.slice(eqIdx + 1);
-      setNamedArg(opts, key, value);
+      if (!setNamedArg(opts, key, value)) unknownFlags.push(key);
       i++;
       continue;
     }
@@ -165,11 +186,13 @@ function parseArgs(args: string[]): CliOptions {
 
       const next = args[i + 1];
       if (next !== undefined) {
-        setNamedArg(opts, key, next);
+        if (!setNamedArg(opts, key, next)) unknownFlags.push(key);
         i += 2;
         continue;
       }
 
+      // Trailing flag with no value: still has to be a flag we know.
+      if (!isKnownNamedArg(key)) unknownFlags.push(key);
       i++;
       continue;
     }
@@ -181,9 +204,18 @@ function parseArgs(args: string[]): CliOptions {
     i++;
   }
 
-  if (positionals.length > 0) opts.command = positionals[0];
-  if (positionals.length > 1) opts.subCommand = positionals[1];
-  if (positionals.length > 2) opts.positional = positionals[2];
+  // An unrecognised flag used to be dropped along with its value, so a typo
+  // like --rule silently produced a plain one-off event and reported success.
+  if (unknownFlags.length > 0) {
+    for (const key of unknownFlags) error(`Unknown flag: --${key}`);
+    info("Run 'morgen help' for usage");
+    process.exit(1);
+  }
+
+  const [firstPositional, secondPositional, thirdPositional] = positionals;
+  if (firstPositional !== undefined) opts.command = firstPositional;
+  if (secondPositional !== undefined) opts.subCommand = secondPositional;
+  if (thirdPositional !== undefined) opts.positional = thirdPositional;
 
   // Capture all positionals after the command for commands like "chat"
   // that consume all remaining words as a single prompt
@@ -198,7 +230,8 @@ function parseArgs(args: string[]): CliOptions {
   return opts;
 }
 
-function setNamedArg(opts: CliOptions, key: string, value: string): void {
+/** Returns false when the key is not a flag this CLI knows. */
+function setNamedArg(opts: CliOptions, key: string, value: string): boolean {
   switch (key) {
     case "title": opts.title = value; break;
     case "description": opts.description = value; break;
@@ -225,11 +258,26 @@ function setNamedArg(opts: CliOptions, key: string, value: string): void {
     case "attendees": opts.attendees = value; break;
     case "alert": case "reminder": opts.alert = value; break;
     case "min-minutes": opts.minMinutes = parseInt(value, 10); break;
+    // Recurrence options
+    case "rrule": opts.rrule = value; break;
+    case "repeat": opts.repeat = value; break;
+    case "interval": opts.interval = value; break;
+    case "until": opts.until = value; break;
+    case "count": opts.count = value; break;
+    case "except": opts.except = value; break;
+    case "series": opts.series = value; break;
     case "port": opts.port = parseInt(value, 10); break;
     // Chat calendar filtering
     case "calendars": opts.calendars = value.split(",").map((s) => s.trim()); break;
     case "exclude-calendars": opts.excludeCalendars = value.split(",").map((s) => s.trim()); break;
+    default: return false;
   }
+  return true;
+}
+
+/** Single source of truth: probe the switch above rather than duplicate its keys. */
+function isKnownNamedArg(key: string): boolean {
+  return setNamedArg(emptyOptions(), key, "");
 }
 
 // ---------------------------------------------------------------------------
@@ -336,6 +384,19 @@ ${colors.bold}OPTIONS${colors.reset}
                       Alias: --reminder
   --reminder <leads>  Alias for --alert
   --all-day           Create an all-day event
+  --rrule <rule>      Recurrence as an RFC 5545 RRULE body
+                      (e.g. "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO;UNTIL=20261130")
+  --repeat <spec>     Recurrence, plain form: daily | weekly | monthly | yearly |
+                      weekdays, or weekly:MO,WE,FR, or monthly:15.
+                      Bare "weekly" repeats on --start's weekday.
+                      Mutually exclusive with --rrule
+  --interval <n>      Repeat every n periods (default: 1)
+  --until <date>      Repeat until YYYY-MM-DD (end of day) or a full datetime.
+                      Mutually exclusive with --count
+  --count <n>         Stop after n occurrences. Mutually exclusive with --until
+  --except <dates>    Comma-separated YYYY-MM-DD occurrences to skip
+  --series <mode>     Scope of an update/delete on a series:
+                      single (default) | future | all
   --min-minutes <n>   Minimum free slot duration (default: 30)
   --slots <windows>   Open Invite: proposed windows "startISO/endISO,..." (UTC or with offset)
   --calendar <name>   Open Invite: calendar to host the booked event (partial name match)
@@ -386,6 +447,23 @@ ${colors.bold}EXAMPLES${colors.reset}
   morgen calendar create --title "Meeting" --start 2026-02-10T14:00:00 --end 2026-02-10T15:00:00
   morgen calendar create --title "Standup" --start 2026-02-10T09:00:00 --end 2026-02-10T09:15:00 --alert 30m,10m
   morgen calendar update <event-id> --reminder 1h
+
+  ${colors.dim}# Create a recurring event (both forms are equivalent)${colors.reset}
+  morgen calendar create --title "Securities Regulation" \\
+    --start 2026-08-24T13:30:00 --end 2026-08-24T15:30:00 --tz America/New_York \\
+    --repeat weekly --until 2026-11-30
+  morgen calendar create --title "Securities Regulation" \\
+    --start 2026-08-24T13:30:00 --end 2026-08-24T15:30:00 --tz America/New_York \\
+    --rrule "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO;UNTIL=20261130"
+
+  ${colors.dim}# Every other Tuesday and Thursday, 10 times, skipping two dates${colors.reset}
+  morgen calendar create --title "Standup" --start 2026-09-01T09:00:00 --duration PT15M \\
+    --repeat weekly:TU,TH --interval 2 --count 10 --except 2026-09-08,2026-10-13
+
+  ${colors.dim}# Change or delete a whole series rather than one occurrence${colors.reset}
+  morgen calendar update <event-id> --title "Securities Regulation II" --series all
+  morgen calendar update <event-id> --repeat weekly:MO,WE --series future
+  morgen calendar delete <event-id> --series all
 
   ${colors.dim}# Schedule a task on the calendar${colors.reset}
   morgen tasks schedule <task-id> --start 2026-02-10T10:00:00
@@ -728,6 +806,14 @@ async function handleTasks(opts: CliOptions) {
 // ---------------------------------------------------------------------------
 // Calendar/Event formatting
 // ---------------------------------------------------------------------------
+
+/** Shift a bare YYYY-MM-DD by whole days, staying in UTC to avoid DST drift. */
+function shiftDate(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 function formatCalendar(cal: MorgenCalendar): string {
   const write = (cal.myRights?.mayWrite || cal.myRights?.mayWriteAll)
     ? `${colors.green}rw${colors.reset}`
@@ -751,7 +837,24 @@ function formatEvent(event: MorgenEvent & { calendarName?: string }, targetTz?: 
   const status = event.freeBusyStatus && event.freeBusyStatus !== "busy"
     ? `  ${colors.yellow}(${event.freeBusyStatus})${colors.reset}`
     : "";
-  return `${timeStr} ${event.title}${dur}${status}${cal}  ${colors.dim}${event.id}${colors.reset}`;
+  return `${timeStr} ${event.title}${dur}${status}${formatRecurrence(event)}${cal}  ${colors.dim}${event.id}${colors.reset}`;
+}
+
+/**
+ * Recurrence badge for a listing row. Two signals, either of which marks the
+ * row: `recurrenceRules` on a series master, and `recurrenceId`/`masterEventId`
+ * on an expanded occurrence — which is what /events/list actually returns,
+ * since it expands series into instances that carry no rules of their own.
+ */
+function formatRecurrence(event: MorgenEvent): string {
+  const rules = event.recurrenceRules;
+  if (Array.isArray(rules) && rules.length > 0) {
+    return `  ${colors.magenta}↺ ${describeRecurrence(rules)}${colors.reset}`;
+  }
+  if (event.recurrenceId || event.masterEventId || event.masterBaseEventId) {
+    return `  ${colors.magenta}↺${colors.reset}`;
+  }
+  return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -839,13 +942,15 @@ async function handleCalendar(opts: CliOptions) {
     if (!opts.start) {
       // Default to today
       const now = new Date();
-      opts.start = now.toISOString().split("T")[0];
+      const [nowDate = ""] = now.toISOString().split("T");
+      opts.start = nowDate;
     }
     if (!opts.end) {
       // Default to start + 1 day
       const startDate = new Date(opts.start);
       startDate.setDate(startDate.getDate() + 1);
-      opts.end = startDate.toISOString().split("T")[0];
+      const [nextDate = ""] = startDate.toISOString().split("T");
+      opts.end = nextDate;
     }
 
     const calendarIds = await resolveCalendarFilter(opts);
@@ -934,6 +1039,29 @@ async function handleCalendar(opts: CliOptions) {
     const locations = buildLocations(opts.location);
     const alerts = buildAlerts(opts.alert);
 
+    let recurrenceRules;
+    let recurrenceOverrides;
+    try {
+      recurrenceRules = buildRecurrenceRules({
+        rrule: opts.rrule,
+        repeat: opts.repeat,
+        interval: opts.interval,
+        until: opts.until,
+        count: opts.count,
+        start: opts.start,
+        timeZone: tz,
+      });
+      recurrenceOverrides = buildRecurrenceOverrides(opts.except, opts.start);
+    } catch (e) {
+      error(e instanceof Error ? e.message : String(e));
+      process.exit(1);
+    }
+
+    if (recurrenceOverrides && !recurrenceRules) {
+      error("--except requires a recurring event (--repeat or --rrule)");
+      process.exit(1);
+    }
+
     const id = await createEvent({
       accountId: cal.accountId,
       calendarId: cal.id,
@@ -946,14 +1074,46 @@ async function handleCalendar(opts: CliOptions) {
       ...(participants ? { participants } : {}),
       ...(locations ? { locations } : {}),
       ...(alerts ? { alerts } : {}),
+      ...(recurrenceRules ? { recurrenceRules } : {}),
     });
 
+    // recurrenceOverrides is deliberately NOT sent. It is RFC 8984, but Morgen
+    // whitelists request properties and rejects it outright — verified live
+    // 2026-08-10 against a Google calendar:
+    //   400 {"property":"recurrenceOverrides","constraints":
+    //        {"whitelistValidation":"property recurrenceOverrides should not exist"}}
+    // Sending it fails the whole create, so exclusion is the delete path only:
+    // create the series, read it back, remove the excepted occurrences.
+    let exclusions: ExclusionOutcome | undefined;
+    if (recurrenceOverrides) {
+      const keys = Object.keys(recurrenceOverrides).sort();
+      const dates = keys.map((k) => k.slice(0, 10));
+      // buildTimeParams expands a bare date to UTC bounds, so an occurrence
+      // whose local time falls on an adjacent UTC day would sit outside the
+      // window and be reported excluded while still on the calendar. Pad a day
+      // either side — applyExclusions matches by date, so a wider window is free.
+      exclusions = await applyExclusions(id, keys, {
+        start: shiftDate(dates[0]!, -1),
+        end: shiftDate(dates[dates.length - 1]!, 1),
+        calendarIds: [cal.id],
+      });
+    }
+
+    const result = { id, ...(exclusions ? { exclusions } : {}) };
     if (opts.ndjson) {
-      printNdjson({ id });
+      printNdjson(result);
     } else if (opts.json) {
-      console.log(JSON.stringify({ id }));
+      console.log(JSON.stringify(result));
     } else {
       success(`Event created: ${id}`);
+      if (exclusions) {
+        const skipped = exclusions.requested.length;
+        console.log(
+          exclusions.mechanism === "delete"
+            ? `${colors.dim}Skipped ${skipped} occurrence(s): ${exclusions.deleted.length} deleted${colors.reset}`
+            : `${colors.yellow}Skipped 0 of ${skipped} occurrence(s) — none were found in the series window${colors.reset}`
+        );
+      }
     }
     return;
   }
@@ -964,7 +1124,30 @@ async function handleCalendar(opts: CliOptions) {
       process.exit(1);
     }
 
+    // Validated before anything reaches the network, so a bad --series never
+    // half-applies an update.
+    let seriesUpdateMode: SeriesUpdateMode | undefined;
+    let updateRecurrenceRules;
+    const updateTz =
+      opts.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    try {
+      seriesUpdateMode = parseSeriesMode(opts.series);
+      updateRecurrenceRules = buildRecurrenceRules({
+        rrule: opts.rrule,
+        repeat: opts.repeat,
+        interval: opts.interval,
+        until: opts.until,
+        count: opts.count,
+        start: opts.start,
+        timeZone: updateTz,
+      });
+    } catch (e) {
+      error(e instanceof Error ? e.message : String(e));
+      process.exit(1);
+    }
+
     const body: Record<string, unknown> = { id: opts.positional };
+    if (updateRecurrenceRules) body.recurrenceRules = updateRecurrenceRules;
     if (opts.title) body.title = opts.title;
     if (opts.description) body.description = opts.description;
     if (opts.location) body.locations = buildLocations(opts.location);
@@ -990,9 +1173,10 @@ async function handleCalendar(opts: CliOptions) {
         body.duration = opts.duration;
       } else {
         // Fetch existing event to preserve its duration
+        const [startDay = ""] = opts.start.split("T");
         const events = await listEvents({
-          start: opts.start.split("T")[0],
-          end: opts.start.split("T")[0],
+          start: startDay,
+          end: startDay,
         });
         const existing = events.find((e) => e.id === opts.positional);
         body.duration = existing?.duration || "PT1H";
@@ -1001,7 +1185,7 @@ async function handleCalendar(opts: CliOptions) {
       body.showWithoutTime = opts.allDay;
     }
 
-    await updateEvent(body);
+    await updateEvent(body, seriesUpdateMode);
     if (opts.ndjson) {
       printNdjson({ success: true });
     } else if (opts.json) {
@@ -1017,7 +1201,14 @@ async function handleCalendar(opts: CliOptions) {
       error("Usage: morgen calendar delete <event-id>");
       process.exit(1);
     }
-    await deleteEvent(opts.positional);
+    let deleteSeriesMode: SeriesUpdateMode | undefined;
+    try {
+      deleteSeriesMode = parseSeriesMode(opts.series);
+    } catch (e) {
+      error(e instanceof Error ? e.message : String(e));
+      process.exit(1);
+    }
+    await deleteEvent(opts.positional, deleteSeriesMode);
     if (opts.ndjson) {
       printNdjson({ success: true });
     } else if (opts.json) {

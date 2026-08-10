@@ -59,6 +59,37 @@ export interface MorgenCalendar {
   };
 }
 
+/**
+ * A JSCalendar NDay (RFC 8984 §4.3.3) — a weekday, optionally restricted to the
+ * nth occurrence of that weekday within the recurrence period (e.g. 2nd Monday,
+ * last Friday).
+ */
+export interface NDay {
+  "@type": "NDay";
+  /** Lowercase two-letter weekday: mo｜tu｜we｜th｜fr｜sa｜su. */
+  day: string;
+  nthOfPeriod?: number;
+}
+
+/**
+ * A JSCalendar RecurrenceRule (RFC 8984 §4.3.3), the shape Morgen's
+ * `recurrenceRules` array carries on /events/create, /events/update and
+ * /events/list. `until` is a LocalDateTime in the event's own timeZone — never
+ * a UTC instant — so a Z-suffixed RFC 5545 UNTIL must be converted first.
+ */
+export interface RecurrenceRule {
+  "@type": "RecurrenceRule";
+  frequency: "daily" | "weekly" | "monthly" | "yearly";
+  interval?: number;
+  count?: number;
+  until?: string;
+  byDay?: NDay[];
+  byMonthDay?: number[];
+  byMonth?: string[];
+  bySetPosition?: number[];
+  firstDayOfWeek?: string;
+}
+
 export interface MorgenEvent {
   "@type": "Event";
   id: string;
@@ -74,9 +105,19 @@ export interface MorgenEvent {
   locations?: MorgenLocation[];
   freeBusyStatus?: string;
   privacy?: string;
-  recurrenceRules?: string[];
+  recurrenceRules?: RecurrenceRule[];
   /** JSCalendar alerts map (keyed by arbitrary string) as returned by /events/list. */
   alerts?: Record<string, unknown>;
+  // --- Recurrence instance fields, present on expanded occurrences returned by
+  // /events/list (observed on both the o365 and google integrations). ---
+  /** LocalDateTime identifying which occurrence of the series this row is. */
+  recurrenceId?: string;
+  /** Timezone `recurrenceId` is expressed in. */
+  recurrenceIdTimeZone?: string;
+  /** Id of the master event this occurrence expands from. */
+  masterEventId?: string;
+  masterBaseEventId?: string;
+  baseEventId?: string;
 }
 
 export interface MorgenParticipant {
@@ -183,6 +224,12 @@ export interface CreateEventInput {
   locations?: Record<string, unknown>;
   /** JSCalendar alerts map (keyed by arbitrary string); each is an Alert with an OffsetTrigger. */
   alerts?: Record<string, unknown>;
+  /** JSCalendar recurrence rules — an array of objects, never RRULE strings. */
+  recurrenceRules?: RecurrenceRule[];
+  // NO recurrenceOverrides. It is RFC 8984, but Morgen whitelists request
+  // properties and rejects it with 400 "property recurrenceOverrides should not
+  // exist" (verified live 2026-08-10), failing the whole create. Occurrences are
+  // excluded by deleting them after create — see applyExclusions.
   "morgen.so:metadata"?: {
     taskId?: string;
     isAutoScheduled?: boolean;

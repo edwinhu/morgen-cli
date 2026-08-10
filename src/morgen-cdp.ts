@@ -290,7 +290,7 @@ async function extractCredentialsFromClient(client: CDP.Client): Promise<{
     returnByValue: true,
   }), "reading Morgen credentials from localStorage");
 
-  const creds = JSON.parse(result.result.value);
+  const creds = JSON.parse(result.result.value as string);
   if (!creds.refreshToken) throw new Error("No morgen-refresh-token found in Morgen app");
   if (!creds.deviceId) {
     throw new Error(
@@ -317,7 +317,12 @@ async function exchangeForSession(
     throw new Error(`Token refresh failed (${resp.status}): ${err.slice(0, 200)}`);
   }
 
-  const data = await resp.json();
+  const data = (await resp.json()) as {
+    token?: string;
+    aiToken?: string;
+    refreshToken?: string;
+    expiresIn?: number;
+  };
   if (!data.token) throw new Error("No token in refresh response");
 
   return {

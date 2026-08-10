@@ -92,9 +92,9 @@ export function resolveToUtcMs(
  */
 function floatingLocalToUtcMs(floatingLocal: string, tz: string): number {
   // Parse components from the string
-  const [datePart, timePart] = floatingLocal.split("T");
-  const [year, month, day] = datePart.split("-").map(Number);
-  const [hour, minute, second] = (timePart || "00:00:00").split(":").map(Number);
+  const [datePart = "", timePart] = floatingLocal.split("T");
+  const [year = NaN, month = NaN, day = NaN] = datePart.split("-").map(Number);
+  const [hour = NaN, minute = NaN, second] = (timePart || "00:00:00").split(":").map(Number);
 
   // Create a Date in UTC, then adjust for the source timezone offset
   // First guess: create a UTC date with these components

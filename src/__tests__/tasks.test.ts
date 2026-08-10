@@ -14,6 +14,7 @@ import {
   moveTask,
   resetAccountsCache,
 } from "../tasks";
+import type { MorgenTask } from "../types";
 
 describe("tasks module exports", () => {
   it("exports all expected functions", () => {
@@ -103,7 +104,7 @@ describe("tasks module behavior", () => {
     expect(lastRequest).not.toBeNull();
     expect(lastRequest!.url).toContain("/v3/tasks/list");
     expect(lastRequest!.url).toContain("limit=10");
-    expect(tasks).toEqual([{ id: "t1", title: "Test task" }]);
+    expect(tasks).toEqual([{ id: "t1", title: "Test task" }] as MorgenTask[]);
   });
 
   it("createTask POSTs to /tasks/create and returns the task ID", async () => {
@@ -139,7 +140,7 @@ describe("tasks module behavior", () => {
     expect(lastRequest).not.toBeNull();
     expect(lastRequest!.url).toContain("/v3/tasks/list");
     expect(lastRequest!.url).toContain("accountId=acct-123");
-    expect(tasks).toEqual([{ id: "int-1", title: "Integration task" }]);
+    expect(tasks).toEqual([{ id: "int-1", title: "Integration task" }] as MorgenTask[]);
   });
 
   it("getTask returns task directly when /tasks?id= populates it (native ID)", async () => {
@@ -348,8 +349,8 @@ describe("tasks module behavior", () => {
     const accounts = await listIntegrationAccounts();
 
     expect(accounts).toHaveLength(2);
-    expect(accounts[0].id).toBe("a1");
-    expect(accounts[1].id).toBe("a3");
+    expect(accounts[0]?.id).toBe("a1");
+    expect(accounts[1]?.id).toBe("a3");
   });
 
   it("listIntegrationAccounts includes accounts when integrationGroups is absent", async () => {
@@ -367,8 +368,8 @@ describe("tasks module behavior", () => {
     const accounts = await listIntegrationAccounts();
 
     expect(accounts).toHaveLength(2);
-    expect(accounts[0].id).toBe("a1");
-    expect(accounts[1].id).toBe("a3");
+    expect(accounts[0]?.id).toBe("a1");
+    expect(accounts[1]?.id).toBe("a3");
   });
 
   it("propagates API errors as MorgenApiError", async () => {

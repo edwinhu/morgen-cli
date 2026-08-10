@@ -51,10 +51,10 @@ describe("Chat types", () => {
     ];
 
     expect(messages).toHaveLength(4);
-    expect(messages[0].role).toBe("system");
-    expect(messages[1].role).toBe("user");
-    expect(messages[2].role).toBe("assistant");
-    expect(messages[3].role).toBe("tool");
+    expect(messages[0]?.role).toBe("system");
+    expect(messages[1]?.role).toBe("user");
+    expect(messages[2]?.role).toBe("assistant");
+    expect(messages[3]?.role).toBe("tool");
   });
 
   it("ChatToolCall has id, name and arguments", () => {
@@ -91,7 +91,7 @@ describe("Chat types", () => {
     expect(deltaFull.role).toBe("assistant");
     expect(deltaFull.content).toBe("Hello");
     expect(deltaFull.tool_calls).toHaveLength(1);
-    expect(deltaFull.tool_calls![0].function.name).toBe("get_weather");
+    expect(deltaFull.tool_calls![0]?.function.name).toBe("get_weather");
   });
 
   it("ChatCompletionChunk has required fields and optional usage", () => {
@@ -110,7 +110,7 @@ describe("Chat types", () => {
     expect(chunk.id).toBe("chatcmpl-abc123");
     expect(chunk.model).toBe("gpt-4");
     expect(chunk.choices).toHaveLength(1);
-    expect(chunk.choices[0].finish_reason).toBeNull();
+    expect(chunk.choices[0]?.finish_reason).toBeNull();
     expect(chunk.usage).toBeUndefined();
 
     const chunkWithUsage: ChatCompletionChunk = {
@@ -186,8 +186,8 @@ describe("parseSSEStream", () => {
     }
 
     expect(results).toHaveLength(1);
-    expect(results[0].id).toBe("chatcmpl-001");
-    expect(results[0].choices[0].delta.content).toBe("Hello");
+    expect(results[0]?.id).toBe("chatcmpl-001");
+    expect(results[0]?.choices[0]?.delta.content).toBe("Hello");
   });
 
   it("parses multiple SSE chunks from a single data buffer", async () => {
@@ -214,8 +214,8 @@ describe("parseSSEStream", () => {
     }
 
     expect(results).toHaveLength(2);
-    expect(results[0].choices[0].delta.content).toBe("Hi");
-    expect(results[1].choices[0].delta.content).toBe(" there");
+    expect(results[0]?.choices[0]?.delta.content).toBe("Hi");
+    expect(results[1]?.choices[0]?.delta.content).toBe(" there");
   });
 
   it("handles chunks split across multiple buffers", async () => {
@@ -241,7 +241,7 @@ describe("parseSSEStream", () => {
     }
 
     expect(results).toHaveLength(1);
-    expect(results[0].choices[0].delta.content).toBe("split");
+    expect(results[0]?.choices[0]?.delta.content).toBe("split");
   });
 
   it("ignores empty lines and non-data lines", async () => {
@@ -264,7 +264,7 @@ describe("parseSSEStream", () => {
     }
 
     expect(results).toHaveLength(1);
-    expect(results[0].choices[0].delta.content).toBe("ok");
+    expect(results[0]?.choices[0]?.delta.content).toBe("ok");
   });
 
   it("handles chunk with usage info (final chunk)", async () => {
@@ -286,12 +286,12 @@ describe("parseSSEStream", () => {
     }
 
     expect(results).toHaveLength(1);
-    expect(results[0].usage).toEqual({
+    expect(results[0]?.usage).toEqual({
       prompt_tokens: 10,
       completion_tokens: 5,
       total_tokens: 15,
     });
-    expect(results[0].choices[0].finish_reason).toBe("stop");
+    expect(results[0]?.choices[0]?.finish_reason).toBe("stop");
   });
 });
 

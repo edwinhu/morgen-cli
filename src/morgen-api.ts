@@ -9,7 +9,15 @@
 
 import { loadSession, refreshSession, authenticate } from "./morgen-cdp";
 
-const BASE_URL = "https://api.morgen.so/v3";
+const DEFAULT_BASE_URL = "https://api.morgen.so/v3";
+
+/**
+ * Read at call time, not at module load, so a test can point a freshly spawned
+ * CLI at a stub server via the environment.
+ */
+function baseUrl(): string {
+  return process.env.MORGEN_API_BASE_URL || DEFAULT_BASE_URL;
+}
 
 export class MorgenApiError extends Error {
   constructor(
@@ -56,7 +64,7 @@ export async function morgenFetch<T>(
   const authHeader = await getAuthHeader();
   const method = options?.method ?? "GET";
 
-  let url = `${BASE_URL}${path}`;
+  let url = `${baseUrl()}${path}`;
   if (options?.params) {
     const searchParams = new URLSearchParams(options.params);
     url += `?${searchParams.toString()}`;

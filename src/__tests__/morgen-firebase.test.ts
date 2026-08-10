@@ -79,7 +79,7 @@ describe("morgen-firebase", () => {
         expiresAt: Date.now() + 60 * 60 * 1000,
       })
     );
-    globalThis.fetch = (async () => {
+    globalThis.fetch = (async (_input: string | URL | Request): Promise<Response> => {
       throw new Error("should not fetch");
     }) as typeof fetch;
     const session = await getFirebaseSession();
