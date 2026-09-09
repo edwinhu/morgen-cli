@@ -17,6 +17,14 @@ import {
   moveTask,
 } from "./tasks";
 import {
+  decodeObsidianTaskId,
+  findVaultTask,
+  readVaultTasks,
+  resolveVaultPath,
+  closeVaultTask,
+  reopenVaultTask,
+} from "./obsidian";
+import {
   listCalendars,
   listEvents,
   streamEvents,
@@ -49,7 +57,7 @@ import {
 import { MorgenApiError } from "./morgen-api";
 import { authenticate } from "./morgen-cdp";
 import type { MorgenTask, MorgenEvent, MorgenCalendar, CreateTaskInput, UpdateTaskInput } from "./types";
-import { convertToTimezone, formatTimeForDisplay } from "./time";
+import { convertToTimezone, formatTimeForDisplay, normalizeLocalDateTime } from "./time";
 import pkg from "../package.json";
 
 const VERSION = pkg.version;
@@ -136,6 +144,8 @@ interface CliOptions {
   noAvailabilityCheck?: boolean;
   conferencing?: string;
   room?: string;
+  // Obsidian vault
+  vault?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -245,14 +255,18 @@ function setNamedArg(opts: CliOptions, key: string, value: string): boolean {
     case "after": opts.after = value; break;
     case "parent": opts.parent = value; break;
     case "account": opts.account = value; break;
+    case "vault": opts.vault = value; break;
     // Calendar/event options
     case "calendar": opts.calendarId = value; opts.calendar = value; break;
     case "calendar-id": opts.calendarId = value; break;
     case "slots": opts.slots = value; break;
     case "conferencing": case "conf": opts.conferencing = value; break;
     case "room": opts.room = value; break;
-    case "start": opts.start = value; break;
-    case "end": opts.end = value; break;
+    // Normalised at the single seam where the flags are consumed, so every
+    // command that forwards a local datetime — tasks schedule, calendar
+    // create, calendar update — sends the 19 characters the API requires.
+    case "start": opts.start = normalizeLocalDateTime(value); break;
+    case "end": opts.end = normalizeLocalDateTime(value); break;
     case "timezone": case "tz": opts.timeZone = value; break;
     case "location": opts.location = value; break;
     case "attendees": opts.attendees = value; break;
@@ -338,11 +352,12 @@ ${colors.bold}COMMANDS${colors.reset}
   ${colors.cyan}tasks${colors.reset}              List Morgen-native tasks
   ${colors.cyan}tasks${colors.reset} --all         List tasks from ALL connected accounts
   ${colors.cyan}tasks${colors.reset} --account <id> List tasks from a specific account
+  ${colors.cyan}tasks${colors.reset} --vault <path> List tasks from an Obsidian vault (read-only)
   ${colors.cyan}tasks get${colors.reset} <id>      Get a specific task
   ${colors.cyan}tasks create${colors.reset}        Create a new task (Morgen-native)
   ${colors.cyan}tasks update${colors.reset} <id>   Update a task (Morgen-native)
-  ${colors.cyan}tasks close${colors.reset} <id>    Mark task as complete (all providers)
-  ${colors.cyan}tasks reopen${colors.reset} <id>   Reopen a completed task (all providers)
+  ${colors.cyan}tasks close${colors.reset} <id>    Mark task as complete (Obsidian ids need --vault)
+  ${colors.cyan}tasks reopen${colors.reset} <id>   Reopen a completed task (Obsidian ids need --vault)
   ${colors.cyan}tasks delete${colors.reset} <id>   Delete a task (Morgen-native)
   ${colors.cyan}tasks move${colors.reset} <id>    Move/reorder a task (--after, --parent)
   ${colors.cyan}tasks schedule${colors.reset} <id> Schedule a task on the calendar (--start)
@@ -373,6 +388,7 @@ ${colors.bold}OPTIONS${colors.reset}
   --parent <id>       Set parent task ID (for move)
   --account <id>      Filter tasks by integration account ID
   --all               List tasks from all connected accounts
+  --vault <path>      Obsidian vault path (env: MORGEN_OBSIDIAN_VAULT)
   --calendar-id <id>  Calendar ID (for event create)
   --start <datetime>  Start time (ISO format or YYYY-MM-DD)
   --end <datetime>    End time (ISO format or YYYY-MM-DD)
@@ -542,6 +558,21 @@ async function handleTasks(opts: CliOptions) {
 
   // Default: list tasks
   if (!sub || sub === "list") {
+    // An explicit --vault lists that vault's tasks instead of the API's, so
+    // ids can be discovered offline before scheduling. MORGEN_OBSIDIAN_VAULT
+    // alone does not redirect the listing -- only the flag does.
+    if (opts.vault) {
+      const vaultTasks = readVaultTasks(opts.vault);
+      if (opts.ndjson) {
+        for (const t of vaultTasks) printNdjson(t);
+      } else if (opts.json) {
+        console.log(JSON.stringify(vaultTasks, null, 2));
+      } else {
+        console.log(formatTaskList(vaultTasks, opts.timeZone));
+      }
+      return;
+    }
+
     if (opts.ndjson) {
       // Streaming NDJSON: emit each task as it arrives (parallel per-account)
       const emitBatch = (tasks: MorgenTask[]) => {
@@ -685,6 +716,29 @@ async function handleTasks(opts: CliOptions) {
       error("Usage: morgen tasks close <id>");
       process.exit(1);
     }
+    // Obsidian ids are a client-side construction the API rejects outright
+    // ("400 Invalid task id"); completion there is a local filesystem write.
+    if (decodeObsidianTaskId(opts.positional)) {
+      const vaultPath = resolveVaultPath(opts.vault);
+      if (!vaultPath) {
+        error(
+          "That is an Obsidian task id, but no vault is configured. " +
+            "Pass --vault <path> or set MORGEN_OBSIDIAN_VAULT."
+        );
+        process.exit(1);
+      }
+      const changed = closeVaultTask(vaultPath, opts.positional);
+      if (opts.ndjson) {
+        printNdjson({ success: changed, changed });
+      } else if (opts.json) {
+        console.log(JSON.stringify({ success: changed, changed }));
+      } else if (changed) {
+        success("Task closed");
+      } else {
+        success("Task already closed (no change)");
+      }
+      return;
+    }
     await closeTask(opts.positional);
     if (opts.ndjson) {
       printNdjson({ success: true });
@@ -700,6 +754,27 @@ async function handleTasks(opts: CliOptions) {
     if (!opts.positional) {
       error("Usage: morgen tasks reopen <id>");
       process.exit(1);
+    }
+    if (decodeObsidianTaskId(opts.positional)) {
+      const vaultPath = resolveVaultPath(opts.vault);
+      if (!vaultPath) {
+        error(
+          "That is an Obsidian task id, but no vault is configured. " +
+            "Pass --vault <path> or set MORGEN_OBSIDIAN_VAULT."
+        );
+        process.exit(1);
+      }
+      const changed = reopenVaultTask(vaultPath, opts.positional);
+      if (opts.ndjson) {
+        printNdjson({ success: changed, changed });
+      } else if (opts.json) {
+        console.log(JSON.stringify({ success: changed, changed }));
+      } else if (changed) {
+        success("Task reopened");
+      } else {
+        success("Task already open (no change)");
+      }
+      return;
     }
     await reopenTask(opts.positional);
     if (opts.ndjson) {
@@ -758,8 +833,27 @@ async function handleTasks(opts: CliOptions) {
       process.exit(1);
     }
 
-    // Fetch the task to get title and estimatedDuration
-    const task = await getTask(opts.positional);
+    // Fetch the task to get title and estimatedDuration. Obsidian ids are not
+    // known to the API at all (they 404), so resolve those from the vault.
+    let task;
+    if (decodeObsidianTaskId(opts.positional)) {
+      const vaultPath = resolveVaultPath(opts.vault);
+      if (!vaultPath) {
+        error(
+          "That is an Obsidian task id, but no vault is configured. " +
+            "Pass --vault <path> or set MORGEN_OBSIDIAN_VAULT."
+        );
+        process.exit(1);
+      }
+      const vaultTask = findVaultTask(vaultPath, opts.positional);
+      if (!vaultTask) {
+        error(`Obsidian task not found in vault ${vaultPath}: ${opts.positional}`);
+        process.exit(1);
+      }
+      task = vaultTask;
+    } else {
+      task = await getTask(opts.positional);
+    }
     const tz = opts.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
     const duration = opts.duration || task.estimatedDuration || "PT1H";
 

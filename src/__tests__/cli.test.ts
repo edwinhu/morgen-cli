@@ -902,4 +902,209 @@ describe("morgen CLI", () => {
     }
   });
 
+  // -------------------------------------------------------------------------
+  // Obsidian vault tasks. The fixture vault lives under os.tmpdir(); the real
+  // vault is never read, and nothing is written to either.
+  // -------------------------------------------------------------------------
+
+  const EV9_LINE =
+    "- [ ] Pre-return inspection: Kia usually offers one ~60 days out. Book it — it tells you excess-wear exposure before turn-in 📅 2026-09-01 🆔 gThNq3";
+  const EV9_ID =
+    "eyJmcCI6Ii9BcmVhcy9FVjkgTGVhc2UtRW5kIERlY2lzaW9uLm1kIiwidGlkIjoiZ1RoTnEzIiwidm4iOiJub3RlcyJ9";
+
+  async function withFixtureVault<T>(fn: (vault: string) => Promise<T>): Promise<T> {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("fs");
+    const { tmpdir } = await import("os");
+    const { join } = await import("path");
+
+    const root = mkdtempSync(join(tmpdir(), "morgen-cli-vault-"));
+    const vault = join(root, "notes");
+    mkdirSync(join(vault, "Areas"), { recursive: true });
+    writeFileSync(join(vault, "Areas", "EV9 Lease-End Decision.md"), `${EV9_LINE}\n`);
+    try {
+      return await fn(vault);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it("tasks --vault lists the vault's tasks without touching the API", async () => {
+    const stub = startStubApi();
+    try {
+      await withFixtureVault(async (vault) => {
+        const proc = Bun.spawn(
+          ["bun", "run", CLI, "tasks", "--vault", vault, "--json"],
+          {
+            stdout: "pipe",
+            stderr: "pipe",
+            env: {
+              ...process.env,
+              MORGEN_API_BASE_URL: stub.url,
+              MORGEN_API_KEY: "test-key",
+              HOME: "/tmp/morgen-cli-test-nonexistent",
+              MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
+            },
+          }
+        );
+        const stdout = await new Response(proc.stdout).text();
+        const stderr = await new Response(proc.stderr).text();
+        const code = await proc.exited;
+        expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+
+        const tasks = JSON.parse(stdout);
+        expect(Array.isArray(tasks)).toBe(true);
+        expect(tasks).toHaveLength(1);
+        expect(tasks[0].id).toBe(EV9_ID);
+        expect(tasks[0].spaceId).toBe("notes");
+        expect(tasks[0].title).toStartWith("Pre-return inspection");
+        // No task listing was attempted against the API.
+        expect(stub.requestsFor("/tasks/list")).toHaveLength(0);
+      });
+    } finally {
+      stub.close();
+    }
+  });
+
+  it("tasks schedule resolves an Obsidian id from the vault, not from /tasks", async () => {
+    const stub = startStubApi({
+      createdEventId: "evt-from-vault",
+      // The schedule branch selects on mayWriteAll/mayWriteOwn, which the
+      // stub's default calendar does not set.
+      calendars: [
+        {
+          "@type": "Calendar",
+          id: "cal-stub",
+          accountId: "acc-stub",
+          integrationId: "google",
+          name: "Stub",
+          myRights: { mayRead: true, mayWriteAll: true },
+        },
+      ],
+    });
+    try {
+      await withFixtureVault(async (vault) => {
+        const proc = Bun.spawn(
+          [
+            "bun", "run", CLI, "tasks", "schedule", EV9_ID,
+            "--start", "2026-09-01T10:00:00",
+            "--tz", "America/New_York",
+            "--vault", vault,
+            "--json",
+          ],
+          {
+            stdout: "pipe",
+            stderr: "pipe",
+            env: {
+              ...process.env,
+              MORGEN_API_BASE_URL: stub.url,
+              MORGEN_API_KEY: "test-key",
+              HOME: "/tmp/morgen-cli-test-nonexistent",
+              MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
+            },
+          }
+        );
+        const stdout = await new Response(proc.stdout).text();
+        const stderr = await new Response(proc.stderr).text();
+        const code = await proc.exited;
+        expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+        expect(JSON.parse(stdout).eventId).toBe("evt-from-vault");
+
+        // The Obsidian branch never asks the API to resolve the task.
+        expect(stub.requests.filter((r) => r.path.startsWith("/tasks"))).toHaveLength(0);
+
+        const created = stub.requestsFor("/events/create");
+        expect(created).toHaveLength(1);
+        const body = created[0]!.body as Record<string, any>;
+        expect(body.title).toStartWith("Pre-return inspection");
+        expect(body["morgen.so:metadata"]).toEqual({
+          taskId: EV9_ID,
+          isAutoScheduled: true,
+        });
+      });
+    } finally {
+      stub.close();
+    }
+  });
+
+  it("tasks schedule pads a minute-precision --start to 19 characters", async () => {
+    const stub = startStubApi({
+      createdEventId: "evt-padded-start",
+      calendars: [
+        {
+          "@type": "Calendar",
+          id: "cal-stub",
+          accountId: "acc-stub",
+          integrationId: "google",
+          name: "Stub",
+          myRights: { mayRead: true, mayWriteAll: true },
+        },
+      ],
+    });
+    try {
+      await withFixtureVault(async (vault) => {
+        const proc = Bun.spawn(
+          [
+            "bun", "run", CLI, "tasks", "schedule", EV9_ID,
+            "--start", "2026-09-09T08:00",
+            "--duration", "PT30M",
+            "--vault", vault,
+            "--json",
+          ],
+          {
+            stdout: "pipe",
+            stderr: "pipe",
+            env: {
+              ...process.env,
+              MORGEN_API_BASE_URL: stub.url,
+              MORGEN_API_KEY: "test-key",
+              HOME: "/tmp/morgen-cli-test-nonexistent",
+              MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
+            },
+          }
+        );
+        const stdout = await new Response(proc.stdout).text();
+        const stderr = await new Response(proc.stderr).text();
+        const code = await proc.exited;
+        expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+        expect(JSON.parse(stdout).eventId).toBe("evt-padded-start");
+
+        const created = stub.requestsFor("/events/create");
+        expect(created).toHaveLength(1);
+        const body = created[0]!.body as Record<string, any>;
+        expect(body.start).toBe("2026-09-09T08:00:00");
+        expect(String(body.start)).toHaveLength(19);
+      });
+    } finally {
+      stub.close();
+    }
+  });
+
+  it("tasks schedule errors clearly for an Obsidian id with no resolvable vault", async () => {
+    const stub = startStubApi();
+    try {
+      const proc = Bun.spawn(
+        ["bun", "run", CLI, "tasks", "schedule", EV9_ID, "--start", "2026-09-01T10:00:00"],
+        {
+          stdout: "pipe",
+          stderr: "pipe",
+          env: {
+            ...process.env,
+            MORGEN_API_BASE_URL: stub.url,
+            MORGEN_API_KEY: "test-key",
+            MORGEN_OBSIDIAN_VAULT: "",
+            HOME: "/tmp/morgen-cli-test-nonexistent",
+            MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
+          },
+        }
+      );
+      const stderr = await new Response(proc.stderr).text();
+      const code = await proc.exited;
+      expect(code).not.toBe(0);
+      expect(stderr).toContain("--vault");
+      expect(stub.requestsFor("/events/create")).toHaveLength(0);
+    } finally {
+      stub.close();
+    }
+  });
+
 });

@@ -6,6 +6,17 @@
  */
 
 /**
+ * Pad a minute-precision local datetime to the 19 characters the Morgen API
+ * demands ("start must be longer than or equal to 19 characters"). Only an
+ * exact `YYYY-MM-DDTHH:MM` is touched — date-only values are the documented
+ * all-day form, and anything carrying an offset or `Z` is left for the API to
+ * accept or reject on its own terms.
+ */
+export function normalizeLocalDateTime(value: string): string {
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value) ? `${value}:00` : value;
+}
+
+/**
  * Convert a floating local time from one timezone to another,
  * returning ISO 8601 with UTC offset (e.g., "2026-02-12T05:00:00-05:00").
  *

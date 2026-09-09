@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { convertToTimezone, formatTimeForDisplay } from "../time";
+import { convertToTimezone, formatTimeForDisplay, normalizeLocalDateTime } from "../time";
 
 describe("time module", () => {
   describe("convertToTimezone", () => {
@@ -70,6 +70,30 @@ describe("time module", () => {
     it("returns original HH:mm when targetTz is undefined", () => {
       const result = formatTimeForDisplay("2026-02-12T10:30:00", "UTC", undefined as unknown as string);
       expect(result).toBe("10:30");
+    });
+  });
+
+  describe("normalizeLocalDateTime", () => {
+    it("appends :00 to a minute-precision local datetime", () => {
+      expect(normalizeLocalDateTime("2026-09-09T08:00")).toBe("2026-09-09T08:00:00");
+    });
+
+    it("leaves an already-19-character local datetime alone", () => {
+      expect(normalizeLocalDateTime("2026-09-09T08:00:00")).toBe("2026-09-09T08:00:00");
+    });
+
+    it("leaves a date-only value alone — that is the all-day form", () => {
+      expect(normalizeLocalDateTime("2026-09-09")).toBe("2026-09-09");
+    });
+
+    it("leaves a value carrying Z or an offset alone", () => {
+      expect(normalizeLocalDateTime("2026-09-09T08:00Z")).toBe("2026-09-09T08:00Z");
+      expect(normalizeLocalDateTime("2026-09-09T08:00+02:00")).toBe("2026-09-09T08:00+02:00");
+    });
+
+    it("leaves unparseable input alone for the API to reject", () => {
+      expect(normalizeLocalDateTime("tomorrow")).toBe("tomorrow");
+      expect(normalizeLocalDateTime("")).toBe("");
     });
   });
 });
