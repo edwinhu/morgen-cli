@@ -107,8 +107,22 @@ export function startStubApi(options: StubApiOptions = {}): StubApi {
       switch (path) {
         case "/calendars/list":
           return json({ data: { calendars } });
-        case "/events/list":
-          return json({ data: { events } });
+        case "/events/list": {
+          // The real API only returns events for the calendars asked for, and
+          // the client always sends calendarIds. Honour it so a test can tell a
+          // filtered read apart from an unfiltered one.
+          const wanted = url.searchParams.get("calendarIds");
+          if (wanted === null) return json({ data: { events } });
+          const ids = new Set(wanted.split(",").filter(Boolean));
+          return json({
+            data: {
+              events: events.filter((e) => {
+                const calId = (e as { calendarId?: string }).calendarId;
+                return calId === undefined || ids.has(calId);
+              }),
+            },
+          });
+        }
         case "/events/create":
           return json({ data: { event: { id: createdEventId } } });
         case "/events/update":

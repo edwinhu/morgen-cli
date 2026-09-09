@@ -93,6 +93,31 @@ export function resolveToUtcMs(
   return new Date(s + "Z").getTime();
 }
 
+/**
+ * Resolve the single zone a read command displays in: an explicit zone when one
+ * is given, otherwise the machine's IANA zone, otherwise "UTC".
+ */
+export function resolveDisplayTimeZone(explicit?: string): string {
+  if (typeof explicit === "string" && explicit.trim() !== "") return explicit;
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+/**
+ * Render absolute UTC milliseconds as ISO 8601 with a numeric UTC offset in `tz`
+ * (e.g. utcMsToZoned(0, "America/New_York") === "1969-12-31T19:00:00-05:00").
+ */
+export function utcMsToZoned(ms: number, tz: string): string {
+  const date = new Date(ms);
+  const parts = getDateParts(date, tz);
+  const offset = getUtcOffset(date, tz);
+
+  return (
+    `${parts.year}-${parts.month}-${parts.day}` +
+    `T${parts.hour}:${parts.minute}:${parts.second}` +
+    `${formatOffset(offset)}`
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -136,21 +161,18 @@ function getUtcOffset(date: Date, tz: string): number {
   const utcParts = getDateParts(date, "UTC");
   const tzParts = getDateParts(date, tz);
 
-  const utcMins =
-    Number(utcParts.year) * 525960 +
-    Number(utcParts.month) * 43800 +
-    Number(utcParts.day) * 1440 +
-    Number(utcParts.hour) * 60 +
-    Number(utcParts.minute);
+  // Calendar fields carry no fixed minutes-per-month/year, so compare real
+  // instants rather than weighting the fields.
+  const toMins = (p: DateParts) =>
+    Date.UTC(
+      Number(p.year),
+      Number(p.month) - 1,
+      Number(p.day),
+      Number(p.hour),
+      Number(p.minute),
+    ) / 60000;
 
-  const tzMins =
-    Number(tzParts.year) * 525960 +
-    Number(tzParts.month) * 43800 +
-    Number(tzParts.day) * 1440 +
-    Number(tzParts.hour) * 60 +
-    Number(tzParts.minute);
-
-  return tzMins - utcMins;
+  return toMins(tzParts) - toMins(utcParts);
 }
 
 interface DateParts {
@@ -162,19 +184,33 @@ interface DateParts {
   second: string;
 }
 
-function getDateParts(date: Date, tz: string): DateParts {
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
+/**
+ * Formatter options are a fixed literal, so a zone name is the whole cache key.
+ * A read command touches at most two zones ("UTC" plus the display zone), where
+ * an uncached `getDateParts` would build one formatter per event row.
+ */
+const formatterCache = new Map<string, Intl.DateTimeFormat>();
 
-  const parts = fmt.formatToParts(date);
+function getFormatter(tz: string): Intl.DateTimeFormat {
+  let fmt = formatterCache.get(tz);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+    formatterCache.set(tz, fmt);
+  }
+  return fmt;
+}
+
+function getDateParts(date: Date, tz: string): DateParts {
+  const parts = getFormatter(tz).formatToParts(date);
   const get = (type: string) => parts.find((p) => p.type === type)?.value || "00";
 
   return {

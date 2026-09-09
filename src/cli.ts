@@ -45,6 +45,12 @@ import {
 } from "./calendars";
 import { sendChat } from "./chat";
 import {
+  loadConfig,
+  hasCalendarConfig,
+  applyCalendarConfig,
+  configPath,
+} from "./config";
+import {
   createOpenInvite,
   listOpenInvites,
   listRooms,
@@ -57,7 +63,12 @@ import {
 import { MorgenApiError } from "./morgen-api";
 import { authenticate } from "./morgen-cdp";
 import type { MorgenTask, MorgenEvent, MorgenCalendar, CreateTaskInput, UpdateTaskInput } from "./types";
-import { convertToTimezone, formatTimeForDisplay, normalizeLocalDateTime } from "./time";
+import {
+  convertToTimezone,
+  formatTimeForDisplay,
+  normalizeLocalDateTime,
+  resolveDisplayTimeZone,
+} from "./time";
 import pkg from "../package.json";
 
 const VERSION = pkg.version;
@@ -135,6 +146,8 @@ interface CliOptions {
   // Calendar filtering (applies to calendar events/free/list and chat)
   calendars?: string[];
   excludeCalendars?: string[];
+  allCalendars?: boolean;
+  filterMeta?: boolean;
   onlyPrimary?: boolean;
   port?: number;
   ndjson?: boolean;
@@ -191,6 +204,8 @@ function parseArgs(args: string[]): CliOptions {
       if (key === "all") { opts.all = true; i++; continue; }
       if (key === "all-day") { opts.allDay = true; i++; continue; }
       if (key === "only-primary") { opts.onlyPrimary = true; i++; continue; }
+      if (key === "all-calendars") { opts.allCalendars = true; i++; continue; }
+      if (key === "filter-meta") { opts.filterMeta = true; i++; continue; }
       if (key === "no-availability-check") { opts.noAvailabilityCheck = true; i++; continue; }
       if (key === "no-conferencing" || key === "no-conf") { opts.conferencing = "none"; i++; continue; }
 
@@ -302,6 +317,53 @@ function providerBadge(integrationId: string): string {
   if (integrationId === "microsoftToDo") return `${colors.magenta}[mstodo]${colors.reset}`;
   if (integrationId === "morgen") return "";
   return `${colors.dim}[${integrationId}]${colors.reset}`;
+}
+
+/**
+ * Additive display-zone labelling for read output. `timeZone` names the zone the
+ * emitted datetime is expressed in, so it is stamped ONLY when the datetime was
+ * actually converted into `displayTz` and therefore carries a numeric offset.
+ * A record passed through unconverted (no native zone, or an all-day/floating
+ * value) keeps its data but makes no zone claim; its native zone, if any, still
+ * travels as `originalTimeZone`.
+ */
+function withDisplayZone<T extends { timeZone?: string }>(
+  record: T,
+  displayTz: string,
+  converted: Partial<T> | undefined,
+): T & { timeZone?: string; originalTimeZone?: string } {
+  const native = record.timeZone;
+  const base = { ...record, ...(native ? { originalTimeZone: native } : {}) };
+  if (!converted) {
+    const { timeZone: _dropped, ...rest } = base as typeof base & { timeZone?: string };
+    return rest as T & { timeZone?: string; originalTimeZone?: string };
+  }
+  return { ...base, ...converted, timeZone: displayTz };
+}
+
+function displayEvent(event: MorgenEvent, displayTz: string) {
+  const native = event.timeZone;
+  return withDisplayZone(
+    event,
+    displayTz,
+    event.showWithoutTime || !native
+      ? undefined
+      : { start: convertToTimezone(event.start, native, displayTz) },
+  );
+}
+
+function displayTask<T extends { due?: string; timeZone?: string }>(
+  task: T,
+  displayTz: string,
+) {
+  const native = task.timeZone;
+  return withDisplayZone(
+    task,
+    displayTz,
+    task.due && native
+      ? ({ due: convertToTimezone(task.due, native, displayTz) } as Partial<T>)
+      : undefined,
+  );
 }
 
 function formatTask(task: MorgenTask, targetTz?: string): string {
@@ -422,6 +484,8 @@ ${colors.bold}OPTIONS${colors.reset}
   --no-conferencing   Open Invite: don't attach a video link (alias for --conferencing none)
   --calendars <names> Filter: only include these calendars (partial name match)
   --exclude-calendars <names> Filter: exclude these calendars (partial name match)
+  --all-calendars     Ignore the config file's calendar filter; show everything
+  --filter-meta       Also print the hidden-calendar notice as JSON on stderr
   --only-primary      Filter: only primary calendar (for chat)
   --port <number>     CDP port. Default: probe the Morgen desktop app
                       (ELECTRON_CDP_PORT, 9253) then Chrome/Chromium
@@ -555,6 +619,7 @@ async function handleAccounts(opts: CliOptions) {
 
 async function handleTasks(opts: CliOptions) {
   const sub = opts.subCommand;
+  const displayTz = resolveDisplayTimeZone(opts.timeZone);
 
   // Default: list tasks
   if (!sub || sub === "list") {
@@ -564,11 +629,13 @@ async function handleTasks(opts: CliOptions) {
     if (opts.vault) {
       const vaultTasks = readVaultTasks(opts.vault);
       if (opts.ndjson) {
-        for (const t of vaultTasks) printNdjson(t);
+        for (const t of vaultTasks) printNdjson(displayTask(t, displayTz));
       } else if (opts.json) {
-        console.log(JSON.stringify(vaultTasks, null, 2));
+        console.log(
+          JSON.stringify(vaultTasks.map((t) => displayTask(t, displayTz)), null, 2),
+        );
       } else {
-        console.log(formatTaskList(vaultTasks, opts.timeZone));
+        console.log(formatTaskList(vaultTasks, displayTz));
       }
       return;
     }
@@ -576,12 +643,7 @@ async function handleTasks(opts: CliOptions) {
     if (opts.ndjson) {
       // Streaming NDJSON: emit each task as it arrives (parallel per-account)
       const emitBatch = (tasks: MorgenTask[]) => {
-        for (const t of tasks) {
-          const out = opts.timeZone && t.due && t.timeZone
-            ? { ...t, due: convertToTimezone(t.due, t.timeZone, opts.timeZone!) }
-            : t;
-          printNdjson(out);
-        }
+        for (const t of tasks) printNdjson(displayTask(t, displayTz));
       };
 
       if (opts.account) {
@@ -603,14 +665,10 @@ async function handleTasks(opts: CliOptions) {
       tasks = await listAllTasks({ limit: opts.limit });
     }
     if (opts.json) {
-      const output = opts.timeZone
-        ? tasks.map((t) => t.due && t.timeZone
-            ? { ...t, due: convertToTimezone(t.due, t.timeZone, opts.timeZone!) }
-            : t)
-        : tasks;
+      const output = tasks.map((t) => displayTask(t, displayTz));
       console.log(JSON.stringify(output, null, 2));
     } else {
-      console.log(formatTaskList(tasks, opts.timeZone));
+      console.log(formatTaskList(tasks, displayTz));
     }
     return;
   }
@@ -621,15 +679,13 @@ async function handleTasks(opts: CliOptions) {
       process.exit(1);
     }
     const task = await getTask(opts.positional);
-    const taskOutput = opts.timeZone && task.due && task.timeZone
-      ? { ...task, due: convertToTimezone(task.due, task.timeZone, opts.timeZone) }
-      : task;
+    const taskOutput = displayTask(task, displayTz);
     if (opts.ndjson) {
       printNdjson(taskOutput);
     } else if (opts.json) {
       console.log(JSON.stringify(taskOutput, null, 2));
     } else {
-      console.log(formatTask(task, opts.timeZone));
+      console.log(formatTask(task, displayTz));
       if (task.description) console.log(`\n${task.description}`);
     }
     return;
@@ -955,38 +1011,120 @@ function formatRecurrence(event: MorgenEvent): string {
 // Calendar filtering helper
 // ---------------------------------------------------------------------------
 
+interface CalendarFilter {
+  /** Visible calendar IDs, or undefined for "all calendars". */
+  calendarIds?: string[];
+  /** Calendars an active filter is hiding. Empty when nothing is filtered. */
+  hidden: MorgenCalendar[];
+  /** Where the filter came from. */
+  source: "none" | "flags" | "config";
+}
+
+/**
+ * Resolve the active calendar filter. Precedence, highest first:
+ *   1. --all-calendars                 (bypass everything)
+ *   2. --calendars / --exclude-calendars (substring match, unchanged)
+ *   3. config calendars.include/exclude  (exact, case-insensitive)
+ *   4. nothing                           (all calendars)
+ */
+async function resolveCalendarFilterDetailed(
+  opts: CliOptions
+): Promise<CalendarFilter> {
+  if (opts.allCalendars) return { hidden: [], source: "none" };
+
+  if (opts.calendars || opts.excludeCalendars) {
+    const allCals = await listCalendars();
+    let filtered = allCals;
+
+    if (opts.calendars) {
+      filtered = filtered.filter((c) =>
+        opts.calendars!.some((name) =>
+          c.name.toLowerCase().includes(name.toLowerCase())
+        )
+      );
+    }
+
+    if (opts.excludeCalendars) {
+      filtered = filtered.filter((c) =>
+        !opts.excludeCalendars!.some((name) =>
+          c.name.toLowerCase().includes(name.toLowerCase())
+        )
+      );
+    }
+
+    if (filtered.length === 0) {
+      error("No calendars matched the filter. Check --calendars / --exclude-calendars names.");
+      process.exit(1);
+    }
+
+    const visibleIds = new Set(filtered.map((c) => c.id));
+    return {
+      calendarIds: filtered.map((c) => c.id),
+      hidden: allCals.filter((c) => !visibleIds.has(c.id)),
+      source: "flags",
+    };
+  }
+
+  const config = loadConfig();
+  if (!hasCalendarConfig(config)) return { hidden: [], source: "none" };
+
+  const allCals = await listCalendars();
+  const { visible, hidden } = applyCalendarConfig(allCals, config.calendars!);
+  if (visible.length === 0) {
+    error(
+      `No calendars matched ${configPath()}. Fix calendars.include/exclude, or pass --all-calendars.`
+    );
+    process.exit(1);
+  }
+  return { calendarIds: visible.map((c) => c.id), hidden, source: "config" };
+}
+
 /**
  * Resolve --calendars / --exclude-calendars name filters to calendar IDs.
  * Returns undefined if no filters are active (meaning "all calendars").
  */
 async function resolveCalendarFilter(opts: CliOptions): Promise<string[] | undefined> {
-  if (!opts.calendars && !opts.excludeCalendars) return undefined;
+  return (await resolveCalendarFilterDetailed(opts)).calendarIds;
+}
 
-  const allCals = await listCalendars();
-  let filtered = allCals;
+/**
+ * Say out loud that a filter hid something. Silence here is the failure mode
+ * this whole feature has to avoid: an agent asked "am I free at 2pm?", told
+ * yes, and never shown the conflict sitting on a hidden calendar.
+ *
+ * Always stderr, in every output mode, so `--json` stdout keeps its contract
+ * (calendar events --json is a bare array and stays one). --filter-meta adds
+ * the same fact as a JSON object, also on stderr, for machine consumers.
+ */
+function emitFilterNotice(
+  opts: CliOptions,
+  filter: CalendarFilter,
+  hiddenEventCount?: number
+): void {
+  if (filter.hidden.length === 0) return;
 
-  if (opts.calendars) {
-    filtered = filtered.filter((c) =>
-      opts.calendars!.some((name) =>
-        c.name.toLowerCase().includes(name.toLowerCase())
-      )
+  // Every name, never an ellipsis: truncating can drop the one calendar the
+  // reader needed to see, which is the failure this notice exists to prevent.
+  const names = filter.hidden.map((c) => c.name);
+  const listed = names.join(", ");
+  const subject =
+    hiddenEventCount === undefined
+      ? `${names.length} calendar${names.length === 1 ? "" : "s"} hidden`
+      : `${hiddenEventCount} event${hiddenEventCount === 1 ? "" : "s"} hidden from ${names.length} excluded calendar${names.length === 1 ? "" : "s"}`;
+  process.stderr.write(
+    `${colors.dim}note: ${subject} (${listed}). Use --all-calendars to include them.${colors.reset}\n`
+  );
+
+  if (opts.filterMeta) {
+    process.stderr.write(
+      JSON.stringify({
+        "@type": "CalendarFilterMeta",
+        filterSource: filter.source,
+        hiddenCalendars: names,
+        hiddenEventCount: hiddenEventCount ?? null,
+      }) + "\n"
     );
   }
-
-  if (opts.excludeCalendars) {
-    filtered = filtered.filter((c) =>
-      !opts.excludeCalendars!.some((name) =>
-        c.name.toLowerCase().includes(name.toLowerCase())
-      )
-    );
-  }
-
-  if (filtered.length === 0) {
-    error("No calendars matched the filter. Check --calendars / --exclude-calendars names.");
-    process.exit(1);
-  }
-
-  return filtered.map((c) => c.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -998,6 +1136,7 @@ async function handleCalendar(opts: CliOptions) {
   // Default: list calendars
   if (!sub || sub === "list") {
     let calendars = await listCalendars();
+    let hiddenByConfig: MorgenCalendar[] = [];
 
     // Apply name-based filters to list output too
     if (opts.calendars) {
@@ -1015,6 +1154,16 @@ async function handleCalendar(opts: CliOptions) {
       );
     }
 
+    // No flag given: the config decides what is visible.
+    if (!opts.allCalendars && !opts.calendars && !opts.excludeCalendars) {
+      const config = loadConfig();
+      if (hasCalendarConfig(config)) {
+        const split = applyCalendarConfig(calendars, config.calendars!);
+        calendars = split.visible;
+        hiddenByConfig = split.hidden;
+      }
+    }
+
     if (opts.ndjson) {
       for (const cal of calendars) printNdjson(cal);
     } else if (opts.json) {
@@ -1029,6 +1178,11 @@ async function handleCalendar(opts: CliOptions) {
         }
       }
     }
+    emitFilterNotice(opts, {
+      calendarIds: calendars.map((c) => c.id),
+      hidden: hiddenByConfig,
+      source: "config",
+    });
     return;
   }
 
@@ -1047,47 +1201,53 @@ async function handleCalendar(opts: CliOptions) {
       opts.end = nextDate;
     }
 
-    const calendarIds = await resolveCalendarFilter(opts);
+    const filter = await resolveCalendarFilterDetailed(opts);
+    // When a filter hides something, read every calendar and partition locally
+    // — that is what makes the hidden-event count exact rather than a guess.
+    const visible = filter.calendarIds ? new Set(filter.calendarIds) : undefined;
+    const calendarIds = filter.hidden.length > 0 ? undefined : filter.calendarIds;
+    const isVisible = (e: MorgenEvent) =>
+      visible === undefined || e.calendarId === undefined || visible.has(e.calendarId);
+
+    const displayTz = resolveDisplayTimeZone(opts.timeZone);
 
     if (opts.ndjson) {
+      let hiddenCount = 0;
       // Stream per-account: emit events as each account responds, no cross-account sort
       await streamEvents(
         { start: opts.start, end: opts.end, calendarIds },
         (batch) => {
           for (const e of batch) {
-            const out = opts.timeZone && !e.showWithoutTime
-              ? { ...e, start: convertToTimezone(e.start, e.timeZone, opts.timeZone!) }
-              : e;
-            printNdjson(out);
+            if (!isVisible(e)) { hiddenCount++; continue; }
+            printNdjson(displayEvent(e, displayTz));
           }
         }
       );
+      emitFilterNotice(opts, filter, hiddenCount);
       return;
     }
 
-    const events = await listEvents({
+    const fetched = await listEvents({
       start: opts.start,
       end: opts.end,
       calendarIds,
     });
+    const events = fetched.filter(isVisible);
+    const hiddenEventCount = fetched.length - events.length;
 
     if (opts.json) {
-      const output = opts.timeZone
-        ? events.map((e) => ({
-            ...e,
-            start: e.showWithoutTime ? e.start : convertToTimezone(e.start, e.timeZone, opts.timeZone!),
-          }))
-        : events;
+      const output = events.map((e) => displayEvent(e, displayTz));
       console.log(JSON.stringify(output, null, 2));
     } else {
       if (events.length === 0) {
         console.log(`${colors.dim}No events found${colors.reset}`);
       } else {
         for (const event of events) {
-          console.log(formatEvent(event, opts.timeZone));
+          console.log(formatEvent(event, displayTz));
         }
       }
     }
+    emitFilterNotice(opts, filter, hiddenEventCount);
     return;
   }
 
@@ -1324,11 +1484,11 @@ async function handleCalendar(opts: CliOptions) {
       opts.end = startDate.toISOString();
     }
 
-    const calendarIds = await resolveCalendarFilter(opts);
+    const filter = await resolveCalendarFilterDetailed(opts);
     const slots = await findFreeSlots({
       start: opts.start,
       end: opts.end,
-      calendarIds,
+      calendarIds: filter.calendarIds,
       minMinutes: opts.minMinutes,
       timeZone: opts.timeZone,
     });
@@ -1355,6 +1515,9 @@ async function handleCalendar(opts: CliOptions) {
         }
       }
     }
+    // Free/busy is where a silent filter does the most damage: no event count
+    // is available here, so name the calendars that were left out.
+    emitFilterNotice(opts, filter);
     return;
   }
 

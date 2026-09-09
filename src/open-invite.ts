@@ -13,6 +13,7 @@
 import { getFirebaseSession, FIREBASE_PROJECT_ID } from "./morgen-firebase";
 import { listCalendars } from "./calendars";
 import type { MorgenCalendar } from "./types";
+import { resolveDisplayTimeZone, utcMsToZoned } from "./time";
 
 const FIRESTORE_BASE = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents`;
 const SCHEDULER_BASE = "https://api.morgen.so/scheduler";
@@ -104,7 +105,7 @@ export interface CreateOpenInviteInput {
   duration?: number;
   /** Calendar name (partial match) to host the booked event on. Default: writable default. */
   calendar?: string;
-  /** IANA timezone for predefinedSlots. Default America/New_York. */
+  /** IANA timezone for predefinedSlots. Defaults to the machine's resolved zone. */
   timeZone?: string;
   /** If true, do not also check live calendar availability (just offer the windows). */
   disableAvailabilityCheck?: boolean;
@@ -379,7 +380,7 @@ export async function createOpenInvite(input: CreateOpenInviteInput): Promise<Op
     throw new Error("At least one proposed slot window is required (--slots).");
   }
   const duration = input.duration ?? 30;
-  const timeZone = input.timeZone || "America/New_York";
+  const timeZone = resolveDisplayTimeZone(input.timeZone);
   const title = input.title || "Meeting";
 
   const session = await getFirebaseSession(input.port);
@@ -450,6 +451,20 @@ export async function createOpenInvite(input: CreateOpenInviteInput): Promise<Op
   };
 }
 
+/**
+ * Render a stored "startISO/endISO" window in `tz` with explicit offsets. An
+ * unparseable boundary is passed through rather than dropped.
+ */
+function zoneSlotWindow(window: string, tz: string): string {
+  const [start, end] = window.split("/");
+  const zone = (iso?: string): string => {
+    if (!iso) return "";
+    const ms = new Date(iso).getTime();
+    return isNaN(ms) ? iso : utcMsToZoned(ms, tz);
+  };
+  return end === undefined ? zone(start) : `${zone(start)}/${zone(end)}`;
+}
+
 /** List the user's personal meeting rooms (static conferencing URLs). */
 export async function listRooms(port?: number): Promise<MeetingRoom[]> {
   const session = await getFirebaseSession(port);
@@ -470,6 +485,7 @@ export async function listOpenInvites(port?: number): Promise<OpenInvite[]> {
     if (!href) continue;
     const bo = (decodeValue(f.bookingOptions) as any) || {};
     const event = (decodeValue(f.event) as any) || {};
+    const slotZone = resolveDisplayTimeZone(bo.predefinedSlotsTimezone);
     out.push({
       href,
       hrefShort: (decodeValue(f.hrefShort) as string) || "",
@@ -479,8 +495,8 @@ export async function listOpenInvites(port?: number): Promise<OpenInvite[]> {
       type,
       title: event.summary,
       durations: bo.durations || [],
-      timeZone: bo.predefinedSlotsTimezone,
-      slots: bo.predefinedSlots || [],
+      timeZone: slotZone,
+      slots: ((bo.predefinedSlots as string[]) || []).map((w) => zoneSlotWindow(w, slotZone)),
       conferencing: bo.virtualRoom?.meetingUrl || bo.virtualRoom?.serviceName,
     });
   }

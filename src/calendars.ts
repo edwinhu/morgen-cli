@@ -14,7 +14,12 @@ import type {
   RecurrenceRule,
   NDay,
 } from "./types";
-import { convertToTimezone, resolveToUtcMs } from "./time";
+import {
+  convertToTimezone,
+  resolveToUtcMs,
+  resolveDisplayTimeZone,
+  utcMsToZoned,
+} from "./time";
 
 // ---------------------------------------------------------------------------
 // Calendar cache (avoids repeated /calendars/list calls within one session)
@@ -928,6 +933,8 @@ export interface FreeSlot {
   start: string;
   end: string;
   duration: string;
+  /** IANA zone the `start`/`end` offsets are rendered in. */
+  timeZone: string;
 }
 
 /**
@@ -994,15 +1001,9 @@ export async function findFreeSlots(options: {
   // Find free slots between busy intervals (rangeStart/rangeEnd resolved above)
   const minMs = (options.minMinutes ?? 30) * 60 * 1000;
 
-  // Format timestamps: if timezone requested, convert; otherwise floating UTC
-  const formatTime = (ms: number): string => {
-    if (options.timeZone) {
-      // Convert UTC ms to target timezone with offset
-      const utcIso = new Date(ms).toISOString().replace(/\.000Z$/, "").replace(/Z$/, "");
-      return convertToTimezone(utcIso, "UTC", options.timeZone);
-    }
-    return new Date(ms).toISOString().replace(/\.000Z$/, "").replace(/Z$/, "");
-  };
+  // One resolved display zone for every boundary, always offset-qualified.
+  const displayZone = resolveDisplayTimeZone(options.timeZone);
+  const formatTime = (ms: number): string => utcMsToZoned(ms, displayZone);
 
   const freeSlots: FreeSlot[] = [];
   let cursor = rangeStart;
@@ -1015,6 +1016,7 @@ export async function findFreeSlots(options: {
           start: formatTime(cursor),
           end: formatTime(busyStart),
           duration: formatDuration(gap),
+          timeZone: displayZone,
         });
       }
     }
@@ -1029,6 +1031,7 @@ export async function findFreeSlots(options: {
         start: formatTime(cursor),
         end: formatTime(rangeEnd),
         duration: formatDuration(gap),
+        timeZone: displayZone,
       });
     }
   }

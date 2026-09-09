@@ -65,6 +65,26 @@ morgen calendar events --exclude-calendars rjj6 # Exclude from event listings
 morgen calendar free --exclude-calendars rjj6   # Exclude from free time search
 ```
 
+**Default filtering** comes from `~/.config/morgen-cli/config.json` (or
+`$XDG_CONFIG_HOME/morgen-cli/config.json`), so `calendar`, `calendar events` and
+`calendar free` hide the same calendars without any flag:
+
+```json
+{ "calendars": { "include": ["Calendar", "Gmail"], "exclude": ["Family"] } }
+```
+
+`include` is an allowlist (only those calendars are visible) and runs before
+`exclude`, a denylist. Entries match calendar names by case-insensitive
+full-name equality — unlike `--calendars`/`--exclude-calendars`, which match
+substrings. A missing or malformed config warns on stderr and shows all
+calendars.
+
+Whenever the config hides something, a `note:` line goes to stderr naming the
+hidden calendars and, for `calendar events`, counting the hidden events;
+`--filter-meta` adds the same fact as a JSON object on stderr. Precedence is
+`--all-calendars` > explicit `--calendars`/`--exclude-calendars` > config > all
+calendars.
+
 ### AI Chat
 
 ```bash

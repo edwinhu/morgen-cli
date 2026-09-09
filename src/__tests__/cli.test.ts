@@ -55,6 +55,7 @@ describe("morgen CLI", () => {
       MORGEN_API_KEY: "",
       HOME: "/tmp/morgen-test-no-auth",
       MORGEN_SESSION_FILE: "/tmp/morgen-test-no-auth/session.json",
+      XDG_CONFIG_HOME: "/tmp/morgen-test-no-auth/config",
     };
 
     const proc = Bun.spawn(["bun", "run", CLI, "tasks"], {
@@ -83,6 +84,7 @@ describe("morgen CLI", () => {
     expect(stdout).toContain("calendar free");
     expect(stdout).toContain("--calendars");
     expect(stdout).toContain("--exclude-calendars");
+    expect(stdout).toContain("--all-calendars");
     expect(stdout).toContain("--only-primary");
     expect(stdout).toContain("MORGEN_API_KEY");
   });
@@ -160,6 +162,7 @@ describe("morgen CLI", () => {
         MORGEN_API_KEY: "test-key",
         HOME: "/tmp/morgen-cli-test-nonexistent",
         MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
+        XDG_CONFIG_HOME: "/tmp/morgen-cli-test-nonexistent/config",
       };
 
       const run = async (recurrenceFlags: string[]) => {
@@ -263,6 +266,7 @@ describe("morgen CLI", () => {
         MORGEN_API_KEY: "test-key",
         HOME: "/tmp/morgen-cli-test-nonexistent",
         MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
+        XDG_CONFIG_HOME: "/tmp/morgen-cli-test-nonexistent/config",
       };
 
       const proc = Bun.spawn(
@@ -361,6 +365,7 @@ describe("morgen CLI", () => {
         MORGEN_API_KEY: "test-key",
         HOME: "/tmp/morgen-cli-test-nonexistent",
         MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
+        XDG_CONFIG_HOME: "/tmp/morgen-cli-test-nonexistent/config",
       };
 
       const run = async (series: string) => {
@@ -443,6 +448,7 @@ describe("morgen CLI", () => {
         MORGEN_API_KEY: "test-key",
         HOME: "/tmp/morgen-cli-test-nonexistent",
         MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
+        XDG_CONFIG_HOME: "/tmp/morgen-cli-test-nonexistent/config",
       };
 
       const run = async (...extra: string[]) => {
@@ -510,6 +516,7 @@ describe("morgen CLI", () => {
         MORGEN_API_KEY: "test-key",
         HOME: "/tmp/morgen-cli-test-nonexistent",
         MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
+        XDG_CONFIG_HOME: "/tmp/morgen-cli-test-nonexistent/config",
       };
 
       const run = async (...extra: string[]) => {
@@ -570,6 +577,7 @@ describe("morgen CLI", () => {
         MORGEN_API_KEY: "test-key",
         HOME: "/tmp/morgen-cli-test-nonexistent",
         MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
+        XDG_CONFIG_HOME: "/tmp/morgen-cli-test-nonexistent/config",
       };
 
       const run = async (...extra: string[]) => {
@@ -624,6 +632,7 @@ describe("morgen CLI", () => {
       MORGEN_API_KEY: "test-key",
       HOME: "/tmp/morgen-cli-test-nonexistent",
       MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
+      XDG_CONFIG_HOME: "/tmp/morgen-cli-test-nonexistent/config",
     };
 
     const proc = Bun.spawn(["bun", "run", CLI, "chat", "hello"], {
@@ -720,6 +729,7 @@ describe("morgen CLI", () => {
           MORGEN_API_KEY: "test-key",
           HOME: "/tmp/morgen-cli-test-nonexistent",
           MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
+          XDG_CONFIG_HOME: "/tmp/morgen-cli-test-nonexistent/config",
         },
       });
       const stdout = await new Response(proc.stdout).text();
@@ -792,7 +802,8 @@ describe("morgen CLI", () => {
     ];
     const boolFlags = [
       "--json", "--ndjson", "--stream", "--help", "--version", "--all",
-      "--all-day", "--only-primary", "--no-availability-check",
+      "--all-day", "--only-primary", "--all-calendars", "--filter-meta",
+      "--no-availability-check",
       "--no-conferencing", "--no-conf",
     ];
     const shortFlags = ["-h", "-v"];
@@ -836,6 +847,7 @@ describe("morgen CLI", () => {
         MORGEN_API_KEY: "",
         HOME: "/tmp/morgen-cli-test-nonexistent",
         MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
+        XDG_CONFIG_HOME: "/tmp/morgen-cli-test-nonexistent/config",
       };
 
       const proc = Bun.spawn(["bun", "run", SCRIPT, "--dry-run"], {
@@ -943,6 +955,7 @@ describe("morgen CLI", () => {
               MORGEN_API_KEY: "test-key",
               HOME: "/tmp/morgen-cli-test-nonexistent",
               MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
+              XDG_CONFIG_HOME: "/tmp/morgen-cli-test-nonexistent/config",
             },
           }
         );
@@ -1000,6 +1013,7 @@ describe("morgen CLI", () => {
               MORGEN_API_KEY: "test-key",
               HOME: "/tmp/morgen-cli-test-nonexistent",
               MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
+              XDG_CONFIG_HOME: "/tmp/morgen-cli-test-nonexistent/config",
             },
           }
         );
@@ -1059,6 +1073,7 @@ describe("morgen CLI", () => {
               MORGEN_API_KEY: "test-key",
               HOME: "/tmp/morgen-cli-test-nonexistent",
               MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
+              XDG_CONFIG_HOME: "/tmp/morgen-cli-test-nonexistent/config",
             },
           }
         );
@@ -1094,6 +1109,7 @@ describe("morgen CLI", () => {
             MORGEN_OBSIDIAN_VAULT: "",
             HOME: "/tmp/morgen-cli-test-nonexistent",
             MORGEN_SESSION_FILE: "/tmp/morgen-cli-test-nonexistent/session.json",
+            XDG_CONFIG_HOME: "/tmp/morgen-cli-test-nonexistent/config",
           },
         }
       );
