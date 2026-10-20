@@ -10,6 +10,8 @@ export interface MorgenTask {
   accountId: string;
   integrationId: string;
   taskListId: string;
+  /** Human name of the task's list, from the listing's `taskList` labelDef; absent when unknown. */
+  taskListName?: string;
   title: string;
   description?: string;
   descriptionContentType?: "text/plain" | "text/html";
@@ -153,11 +155,32 @@ export interface IntegrationAccountsResponse {
   };
 }
 
+/**
+ * A label definition from /tasks/list `data.labelDefs`. The entry with
+ * `id: "taskList"` is an enum whose values map list id (`value`) to name (`label`).
+ */
+export interface TaskLabelDef {
+  id: string;
+  label?: string;
+  type?: string;
+  values?: { value: string; label: string; tags?: string[] | null }[];
+}
+
+/** A task list of an integration account, derived from its `taskList` labelDef. */
+export interface TaskList {
+  id: string;
+  name: string;
+  accountId: string;
+  integrationId: string;
+  accountName?: string;
+  isDefault?: boolean;
+}
+
 // API Response wrappers
 export interface TaskListResponse {
   data: {
     tasks: MorgenTask[];
-    labelDefs?: MorgenTag[];
+    labelDefs?: TaskLabelDef[];
     spaces?: unknown[];
   };
 }

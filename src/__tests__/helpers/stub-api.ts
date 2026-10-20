@@ -34,6 +34,14 @@ export interface StubApiOptions {
   events?: unknown[];
   /** Event id returned by POST /events/create. */
   createdEventId?: string;
+  /** Payload for GET /integrations/accounts/list. */
+  taskAccounts?: unknown[];
+  /**
+   * GET /tasks/list payloads keyed by the `accountId` query parameter; the
+   * key "" answers the native call that sends no accountId. Like the real API,
+   * `limit` caps `tasks` (default 1) but never trims `labelDefs`.
+   */
+  taskLists?: Record<string, { tasks: unknown[]; labelDefs?: unknown[] }>;
 }
 
 export interface StubApi {
@@ -62,6 +70,8 @@ export function startStubApi(options: StubApiOptions = {}): StubApi {
   const calendars = options.calendars ?? DEFAULT_CALENDARS;
   const events = options.events ?? [];
   const createdEventId = options.createdEventId ?? "stub-event-id";
+  const taskAccounts = options.taskAccounts ?? [];
+  const taskLists = options.taskLists ?? {};
 
   const json = (payload: unknown, status = 200) =>
     new Response(JSON.stringify(payload), {
@@ -129,6 +139,19 @@ export function startStubApi(options: StubApiOptions = {}): StubApi {
           return json({ data: {} });
         case "/events/delete":
           return new Response(null, { status: 204 });
+        case "/integrations/accounts/list":
+          return json({ data: { accounts: taskAccounts } });
+        case "/tasks/list": {
+          const entry = taskLists[url.searchParams.get("accountId") ?? ""] ?? { tasks: [] };
+          const limit = Number(url.searchParams.get("limit") ?? "1");
+          return json({
+            data: {
+              tasks: entry.tasks.slice(0, limit),
+              labelDefs: entry.labelDefs ?? [],
+              spaces: [],
+            },
+          });
+        }
         default:
           return json({ error: `stub-api: unhandled path ${path}` }, 404);
       }

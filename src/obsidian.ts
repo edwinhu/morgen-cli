@@ -335,6 +335,7 @@ export function readVaultTasks(
         accountId: "obsidian",
         integrationId: "obsidian",
         taskListId: vaultName,
+        taskListName: vaultName,
         spaceId: vaultName,
         notePath: fp,
         title: parsed.title,

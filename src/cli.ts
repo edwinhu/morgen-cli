@@ -8,6 +8,7 @@ import {
   listAllTasks,
   streamTasks,
   listIntegrationAccounts,
+  listTaskLists,
   getTask,
   createTask,
   updateTask,
@@ -62,7 +63,14 @@ import {
 } from "./open-invite";
 import { MorgenApiError } from "./morgen-api";
 import { authenticate } from "./morgen-cdp";
-import type { MorgenTask, MorgenEvent, MorgenCalendar, CreateTaskInput, UpdateTaskInput } from "./types";
+import type {
+  MorgenTask,
+  MorgenEvent,
+  MorgenCalendar,
+  CreateTaskInput,
+  UpdateTaskInput,
+  TaskList,
+} from "./types";
 import {
   convertToTimezone,
   formatTimeForDisplay,
@@ -388,8 +396,37 @@ function formatTask(task: MorgenTask, targetTz?: string): string {
       : "";
   const badge = providerBadge(task.integrationId);
   const source = badge ? `  ${badge}` : "";
+  const list = task.taskListName ? `  ${colors.dim}${task.taskListName}${colors.reset}` : "";
 
-  return `${progress} ${task.title}${pri}${due}${source}  ${colors.dim}${task.id}${colors.reset}`;
+  return `${progress} ${task.title}${pri}${due}${source}${list}  ${colors.dim}${task.id}${colors.reset}`;
+}
+
+/** `--list` filter: a list id matches exactly, a list name case-insensitively. */
+function filterByList(tasks: MorgenTask[], list: string | undefined): MorgenTask[] {
+  if (!list) return tasks;
+  const name = list.toLowerCase();
+  return tasks.filter(
+    (t) => t.taskListId === list || t.taskListName?.toLowerCase() === name,
+  );
+}
+
+/** Task lists for human output: one header per account, one line per list. */
+function formatTaskLists(lists: TaskList[]): string {
+  if (lists.length === 0)
+    return `${colors.dim}No task lists found${colors.reset}`;
+  const lines: string[] = [];
+  let account: string | undefined;
+  for (const l of lists) {
+    if (l.accountId !== account) {
+      account = l.accountId;
+      if (lines.length > 0) lines.push("");
+      const badge = providerBadge(l.integrationId);
+      lines.push(`${badge ? `${badge} ` : ""}${l.accountName || l.accountId}`);
+    }
+    const marker = l.isDefault ? `  ${colors.green}(default)${colors.reset}` : "";
+    lines.push(`  ${l.name}  ${colors.dim}${l.id}${colors.reset}${marker}`);
+  }
+  return lines.join("\n");
 }
 
 function formatTaskList(tasks: MorgenTask[], targetTz?: string): string {
@@ -415,6 +452,8 @@ ${colors.bold}COMMANDS${colors.reset}
   ${colors.cyan}tasks${colors.reset} --all         List tasks from ALL connected accounts
   ${colors.cyan}tasks${colors.reset} --account <id> List tasks from a specific account
   ${colors.cyan}tasks${colors.reset} --vault <path> List tasks from an Obsidian vault (read-only)
+  ${colors.cyan}tasks${colors.reset} --list <name|id> Only list tasks in that list (combines with the above)
+  ${colors.cyan}tasks lists${colors.reset}        List task lists per account (--account to narrow)
   ${colors.cyan}tasks get${colors.reset} <id>      Get a specific task
   ${colors.cyan}tasks create${colors.reset}        Create a new task (Morgen-native)
   ${colors.cyan}tasks update${colors.reset} <id>   Update a task (Morgen-native)
@@ -442,7 +481,8 @@ ${colors.bold}OPTIONS${colors.reset}
   --due <datetime>    Due date (YYYY-MM-DD or YYYY-MM-DDTHH:mm:ss)
   --duration <dur>    Estimated duration (e.g. PT30M, PT1H)
   --priority <n>      Priority 1-9 (1=highest, 9=lowest, 0=none)
-  --list <id>         Task list ID
+  --list <name|id>    Task list: for tasks listing, filter by list id or
+                      name (case-insensitive); for create/update, the list ID
   --progress <state>  Progress: needs-action, in-process, completed
   --limit <n>         Max results (default: 100)
   --tags <ids>        Comma-separated tag IDs
@@ -512,6 +552,10 @@ ${colors.bold}EXAMPLES${colors.reset}
 
   ${colors.dim}# List tasks from all accounts${colors.reset}
   morgen tasks --all
+
+  ${colors.dim}# List task lists, then only one list's tasks${colors.reset}
+  morgen tasks lists
+  morgen tasks --all --list "Family CC"
 
   ${colors.dim}# Close an integration task${colors.reset}
   morgen tasks close <base64-task-id>
@@ -621,13 +665,26 @@ async function handleTasks(opts: CliOptions) {
   const sub = opts.subCommand;
   const displayTz = resolveDisplayTimeZone(opts.timeZone);
 
+  // Checked before the default branch, which also answers to `list`.
+  if (sub === "lists") {
+    const lists = await listTaskLists({ accountId: opts.account });
+    if (opts.ndjson) {
+      for (const l of lists) printNdjson(l);
+    } else if (opts.json) {
+      console.log(JSON.stringify(lists, null, 2));
+    } else {
+      console.log(formatTaskLists(lists));
+    }
+    return;
+  }
+
   // Default: list tasks
   if (!sub || sub === "list") {
     // An explicit --vault lists that vault's tasks instead of the API's, so
     // ids can be discovered offline before scheduling. MORGEN_OBSIDIAN_VAULT
     // alone does not redirect the listing -- only the flag does.
     if (opts.vault) {
-      const vaultTasks = readVaultTasks(opts.vault);
+      const vaultTasks = filterByList(readVaultTasks(opts.vault), opts.list);
       if (opts.ndjson) {
         for (const t of vaultTasks) printNdjson(displayTask(t, displayTz));
       } else if (opts.json) {
@@ -640,18 +697,28 @@ async function handleTasks(opts: CliOptions) {
       return;
     }
 
+    // --list filters before --limit truncates: with a list filter the fetch
+    // runs at the fetchers' own defaults and --limit caps the matches instead.
+    const fetchLimit = opts.list ? undefined : opts.limit;
+    const matchCap = opts.list && opts.limit ? opts.limit : undefined;
+
     if (opts.ndjson) {
       // Streaming NDJSON: emit each task as it arrives (parallel per-account)
+      let emitted = 0;
       const emitBatch = (tasks: MorgenTask[]) => {
-        for (const t of tasks) printNdjson(displayTask(t, displayTz));
+        for (const t of filterByList(tasks, opts.list)) {
+          if (matchCap && emitted >= matchCap) return;
+          printNdjson(displayTask(t, displayTz));
+          emitted++;
+        }
       };
 
       if (opts.account) {
-        const tasks = await listTasks({ limit: opts.limit, accountId: opts.account });
+        const tasks = await listTasks({ limit: fetchLimit, accountId: opts.account });
         emitBatch(tasks);
       } else {
         // Parallel fetch: native + all integration accounts, emit as each responds
-        await streamTasks({ limit: opts.limit }, emitBatch);
+        await streamTasks({ limit: fetchLimit }, emitBatch);
       }
       return;
     }
@@ -659,11 +726,13 @@ async function handleTasks(opts: CliOptions) {
     let tasks;
     if (opts.account) {
       // Explicit account filter: query only that account
-      tasks = await listTasks({ limit: opts.limit, accountId: opts.account });
+      tasks = await listTasks({ limit: fetchLimit, accountId: opts.account });
     } else {
       // Default: query all accounts (native + integrations)
-      tasks = await listAllTasks({ limit: opts.limit });
+      tasks = await listAllTasks({ limit: fetchLimit });
     }
+    tasks = filterByList(tasks, opts.list);
+    if (matchCap) tasks = tasks.slice(0, matchCap);
     if (opts.json) {
       const output = tasks.map((t) => displayTask(t, displayTz));
       console.log(JSON.stringify(output, null, 2));

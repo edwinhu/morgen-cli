@@ -24,6 +24,8 @@ import type {
   IntegrationAccount,
   IntegrationAccountsResponse,
   DecodedMorgenTaskId,
+  TaskLabelDef,
+  TaskList,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -101,7 +103,78 @@ export async function listTasks(
   if (options?.accountId) params.accountId = options.accountId;
 
   const response = await morgenFetch<TaskListResponse>("/tasks/list", { params });
-  return response.data.tasks;
+  return annotateTaskLists(response.data.tasks, response.data.labelDefs);
+}
+
+/** The `taskList` enum values of one /tasks/list response's labelDefs. */
+function taskListValues(labelDefs: TaskLabelDef[] | undefined) {
+  return labelDefs?.find((d) => d.id === "taskList")?.values ?? [];
+}
+
+/**
+ * Fill each task's taskListId (top-level, else its `taskList` label, else
+ * `com.google.taskListId`, else the compound id's `tl`) and taskListName (the
+ * matching `taskList` labelDef value's label). Keys stay absent when unknown.
+ */
+function annotateTaskLists(
+  tasks: MorgenTask[],
+  labelDefs: TaskLabelDef[] | undefined
+): MorgenTask[] {
+  const names = new Map(taskListValues(labelDefs).map((v) => [v.value, v.label]));
+  return tasks.map((task) => {
+    const raw = task as MorgenTask & {
+      labels?: { id?: string; value?: unknown }[];
+      "com.google"?: { taskListId?: string };
+    };
+    const label = raw.labels?.find((l) => l.id === "taskList")?.value;
+    const taskListId =
+      task.taskListId ||
+      (typeof label === "string" && label ? label : undefined) ||
+      raw["com.google"]?.taskListId ||
+      decodeIntegrationId(task.id)?.tl;
+    if (!taskListId) return task;
+    const taskListName = names.get(taskListId);
+    return taskListName === undefined
+      ? { ...task, taskListId }
+      : { ...task, taskListId, taskListName };
+  });
+}
+
+/**
+ * Enumerate the task lists of every task integration account (or only
+ * `accountId`). Each account costs one /tasks/list call at limit=1, whose
+ * labelDefs carry the full list catalogue regardless of the task limit.
+ */
+export async function listTaskLists(
+  options?: { accountId?: string }
+): Promise<TaskList[]> {
+  const accounts = (await listIntegrationAccounts()).filter(
+    (a) => !options?.accountId || a.id === options.accountId
+  );
+
+  // Sequential, like listAllTasks: parallel calls trip Morgen's rate limits.
+  const lists: TaskList[] = [];
+  for (const acct of accounts) {
+    try {
+      const response = await morgenFetch<TaskListResponse>("/tasks/list", {
+        params: { accountId: acct.id, limit: "1" },
+      });
+      for (const v of taskListValues(response.data.labelDefs)) {
+        lists.push({
+          id: v.value,
+          name: v.label,
+          accountId: acct.id,
+          integrationId: acct.integrationId,
+          ...(acct.providerUserDisplayName ? { accountName: acct.providerUserDisplayName } : {}),
+          ...(v.tags?.includes("defaultList") ? { isDefault: true } : {}),
+        });
+      }
+    } catch (e: any) {
+      const name = acct.providerUserDisplayName || acct.id;
+      console.error(`Warning: failed to fetch task lists for ${name}: ${e.message}`);
+    }
+  }
+  return lists;
 }
 
 export async function listAllTasks(
